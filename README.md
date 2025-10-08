@@ -5,4 +5,4 @@ Exploring **simulation-based inference (SBI)** methods applied to ion-solid inte
 This repo contains Jupyter notebooks and prototype pipelines for:  
 - Running SRIM simulations and extracting lattice vacancy data  
 - Using SBI techniques to infer ion energies from summary statistics  
-- Building toy pipelines as a foundation for future quantum sensing applications  
+- Building basic pipelines as a foundation for future quantum sensing applications  
