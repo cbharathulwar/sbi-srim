@@ -14,91 +14,45 @@ import json
 from datetime import datetime
 from joblib import Parallel, delayed
 import multiprocessing
+from srim import TRIM, Ion, Layer, Target
+from srim.output import Results
 
 
 def pick_random_tracks(x_obs, n=10, seed=None):
     """
-    Randomly select n tracks from x_obs.
+    Randomly select n tracks from x_obs and return both
+    the selected rows and their indices (for reproducibility).
 
     Parameters
     ----------
     x_obs : torch.Tensor
-        The full observation tensor of shape (n_tracks, n_features)
+        Full observation tensor, shape (n_tracks, n_features)
     n : int
-        Number of tracks to randomly sample
+        Number of tracks to sample
     seed : int | None
         Optional random seed for reproducibility
 
     Returns
     -------
     x_test : torch.Tensor
-        Randomly selected subset of x_obs, shape (n, n_features)
+        Sampled observation rows
+    idx : torch.Tensor
+        Indices of sampled tracks in x_obs
     """
     if seed is not None:
         torch.manual_seed(seed)
 
     total_tracks = x_obs.shape[0]
-    n = min(n, total_tracks)  # cap if n > total available
+    n = min(n, total_tracks)
 
     idx = torch.randperm(total_tracks)[:n]
     x_test = x_obs[idx]
 
-    return x_test
+    return x_test, idx
 
 import torch
 
 import torch
-
-def sample_posterior_bulk(posterior, x_obs, num_samples=100):
-    """
-    Sample posterior for multiple SRIM tracks (observations), keeping samples separated.
-
-    Parameters
-    ----------
-    posterior : sbi.inference.posteriors
-        Trained posterior object.
-    x_obs : torch.Tensor
-        Tensor of shape (n_tracks, n_features).
-    num_samples : int
-        Number of posterior samples per track.
-
-    Returns
-    -------
-    samples_dict : dict
-        Dictionary mapping track index -> posterior samples (num_samples, n_params)
-    samples_tensor : torch.Tensor
-        Combined tensor of shape (n_tracks, num_samples, n_params)
-    """
-
-    # --- Detect device (MPS if available, otherwise CPU)
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    posterior = posterior.to(device)
-    x_obs = x_obs.to(device)
-
-    samples_by_track = {}
-    all_tensors = []
-
-    for i, x in enumerate(x_obs):
-        print(f"[SBI] Sampling posterior for track {i+1}/{len(x_obs)} ...")
-
-        # Ensure x is 2D and on same device
-        x = x.unsqueeze(0).to(device)
-
-        # Draw posterior samples for this track
-        with torch.no_grad():
-            theta_samples = posterior.sample((num_samples,), x=x)
-
-        # Move results back to CPU for safety
-        theta_samples = theta_samples.detach().cpu()
-
-        # Store results
-        samples_by_track[i] = theta_samples
-        all_tensors.append(theta_samples)
-
-    # Stack into one structured tensor
-    samples_tensor = torch.stack(all_tensors)  # shape (n_tracks, num_samples, n_params)
-
-    return samples_by_track, samples_tensor
 
 
 
@@ -108,10 +62,44 @@ def sample_posterior_bulk(posterior, x_obs, num_samples=100):
 
 import shutil
 from pathlib import Path
+def sample_posterior_bulk(posterior, x_obs, num_samples=100, track_ids=None):
+    """
+    Sample posterior for multiple tracks and store results per track ID.
 
+    Parameters
+    ----------
+    posterior : trained sbi posterior
+        Trained posterior object (e.g., DirectPosterior)
+    x_obs : torch.Tensor of shape (n_tracks, n_features)
+        Observation tensor
+    num_samples : int
+        Number of posterior samples per track
+    track_ids : list[int] | None
+        Optional original indices for each observation in x_obs
 
-from srim import TRIM, Ion, Layer, Target
-from srim.output import Results
+    Returns
+    -------
+    samples_by_track : dict[int, torch.Tensor]
+        Mapping track_id -> samples [num_samples, n_params]
+    samples_tensor : torch.Tensor
+        Combined samples [n_tracks, num_samples, n_params]
+    """
+    samples_by_track = {}
+    all_tensors = []
+
+    # Iterate over each observation and its associated track ID
+    for i, x in enumerate(x_obs):
+        with torch.no_grad():
+            theta_samples = posterior.sample((num_samples,), x=x)
+
+        # Determine the correct track ID
+        track_id = int(track_ids[i]) if track_ids is not None else i
+
+        samples_by_track[track_id] = theta_samples
+        all_tensors.append(theta_samples)
+
+    samples_tensor = torch.stack(all_tensors)
+    return samples_by_track, samples_tensor
 
 
 
@@ -298,6 +286,7 @@ def run_srim_batch(thetas_eV,
 def run_srim_multi_track(
     samples_dict,
     x_test,
+    track_ids,
     srim_directory,
     output_base,
     ion_symbol="C",
@@ -306,7 +295,7 @@ def run_srim_multi_track(
     density_g_cm3=3.51,
     width_A=15000.0,
     overwrite=False,
-    n_jobs=None  # <--- NEW PARAM
+    n_jobs=None
 ):
     """
     Run SRIM for multiple test tracks, each with its own posterior-sampled energies.
@@ -316,37 +305,47 @@ def run_srim_multi_track(
     output_base = Path(output_base)
     output_base.mkdir(parents=True, exist_ok=True)
 
-    # Determine number of parallel jobs
+    if track_ids is None:
+        track_ids = list(range(len(x_test)))
+
+    if len(track_ids) != len(x_test):
+        raise ValueError("track_ids must match x_test length")
+
     if n_jobs is None:
-        n_jobs = max(1, multiprocessing.cpu_count() - 2)  # leave 2 cores free
+        n_jobs = max(1, multiprocessing.cpu_count() - 2)
 
     print(f"[PPC] Parallel SRIM run using {n_jobs} cores ...")
 
-    # Define one track run
-    def process_track(i, x):
-        print(f"\n[PPC] === Running SRIM for Track {i+1}/{len(x_test)} ===")
+    # --------------------------------------------------
+    # INNER FUNCTION: runs one track at a time
+    # --------------------------------------------------
+    def process_track(i, x, track_id):
+        print(f"\n[PPC] === Running SRIM for Track ID {track_id} (Index {i}) ===")
 
-        track_dir = output_base / f"track_{i:02d}"
+        track_id = int(track_id)  # ensure it's an int for dict keys
+        track_dir = output_base / f"track_{int(track_id):04d}"
         track_dir.mkdir(parents=True, exist_ok=True)
+        srim_sandbox = track_dir / "srim_run"
+        srim_sandbox.mkdir(parents=True, exist_ok=True)
 
-        theta_samples = samples_dict[i].detach().cpu().numpy().flatten().tolist()
-        theta_samples = sorted(set(round(t, 2) for t in theta_samples))  # deduplicate
 
-        # Save metadata
+        theta_samples = samples_dict[int(track_id)].detach().cpu().numpy().flatten().tolist()
+        theta_samples = sorted(set(round(t, 2) for t in theta_samples))
+
         metadata = {
-            "track_index": i,
+            "track_index": int(i),
+            "track_id": int(track_id),
             "x_test": x.detach().cpu().numpy().tolist(),
             "num_samples": len(theta_samples),
             "theta_samples_eV": theta_samples,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(), 
         }
         with open(track_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
-        # Run SRIM for all θ for this track
         run_srim_batch(
             thetas_eV=theta_samples,
-            srim_directory=srim_directory,
+            srim_directory=srim_sandbox,
             output_base=track_dir,
             ion_symbol=ion_symbol,
             number_ions=number_ions,
@@ -356,13 +355,16 @@ def run_srim_multi_track(
             overwrite=overwrite,
         )
 
-        print(f"[PPC] Track {i} complete → results in {track_dir}")
+        print(f"[PPC] Track {track_id} complete → results in {track_dir}")
         return str(track_dir)
 
-    # Run in parallel
+    # --------------------------------------------------
+    # RUN ALL TRACKS IN PARALLEL
+    # --------------------------------------------------
     results = Parallel(n_jobs=n_jobs, backend="loky")(
-        delayed(process_track)(i, x) for i, x in enumerate(x_test)
+        delayed(process_track)(i, x, track_id)
+        for i, (x, track_id) in enumerate(zip(x_test, track_ids))
     )
 
-    print(f"\n All SRIM PPC runs complete ({len(results)} tracks).")
+    print(f"\n[PPC] All SRIM PPC runs complete ({len(results)} tracks).")
     return results

@@ -43,7 +43,7 @@ def make_inference(prior, density_estimator="nsf"):
     return inference
 
 
-def train_posterior(inference, theta, x_obs, epochs=None, save_path=None):
+def train_posterior(inference, theta, x_obs, epochs=None):
     """
     Train neural posterior estimator (NPE).
 
@@ -71,12 +71,6 @@ def train_posterior(inference, theta, x_obs, epochs=None, save_path=None):
     print("[Training complete.]")
 
     posterior = inference.build_posterior(posterior_net)
-
-    if save_path:
-        import pickle
-        with open(save_path, "wb") as f:
-            pickle.dump(posterior, f)
-        print(f"[Saved posterior → {save_path}]")
 
     return posterior
 

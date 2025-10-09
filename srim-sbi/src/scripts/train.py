@@ -46,18 +46,13 @@ x_obs, theta, grouped = preprocess("/Users/cbharathulwar/Documents/Research/Wals
 import torch
 from src.utils.sbi_runner import make_prior, make_inference, train_posterior
 
-# Select device automatically
-device = "mps" if torch.backends.mps.is_available() else "cpu"
-print(f"[INFO] Using device: {device}")
-
-# Move training data to device
-theta = theta.to(device)
-x_obs = x_obs.to(device)
-
 # Define prior, inference, and train posterior
 prior = make_prior(low=[1000], high=[2000000])
 inference = make_inference(prior, density_estimator='nsf')
 posterior = train_posterior(inference, theta, x_obs)
+print("TYPE OF POSTERIOR:", type(posterior))
+
+
 
 # Save posterior 
 # posterior_path = "/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/trained_posterior.pt"
@@ -77,22 +72,19 @@ from src.utils.srim_parser import _parse_vacancy
 from src.utils.srim_parser import summarize_all_runs
 from src.utils.data_utils import plot_ppc_histograms
 
-x_test = pick_random_tracks(x_obs)
-
-samples_dict, samples_tensor = sample_posterior_bulk(
- posterior,
-    x_test,
-    num_samples=25  # adjust as needed
-)
+x_test, track_ids = pick_random_tracks(x_obs, n=10)
+samples_dict, _ = sample_posterior_bulk(posterior, x_test, track_ids=track_ids)
+print("Available track_ids in samples_dict:", samples_dict.keys())
+output_base = Path('/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs')
 
 run_srim_multi_track(
     samples_dict=samples_dict,
     x_test=x_test,
-    srim_directory="/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013",
-    output_base= "/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs",
+    track_ids=track_ids,
+    srim_directory='/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013',
+    output_base = output_base,
     ion_symbol="C",
     number_ions=50,
-    n_jobs=8
 )
 
 df_summary = summarize_all_runs('/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs')
