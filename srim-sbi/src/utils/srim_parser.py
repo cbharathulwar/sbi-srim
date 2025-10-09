@@ -6,6 +6,7 @@ import numpy
 from pathlib import Path
 from typing import Dict, List
 import re, math
+import json
 
 _FLOAT = r'([+-]?\d+(?:\.\d*)?(?:[Ee][+-]?\d+)?)'
 
@@ -106,7 +107,6 @@ def summarize_srim_output(folder: str) -> Dict[str, float]:
 
 import pandas as pd
 from pathlib import Path
-
 def summarize_all_runs(output_base: str) -> pd.DataFrame:
     """
     Loop through all tracks and their theta_* folders under output_base,
@@ -135,6 +135,19 @@ def summarize_all_runs(output_base: str) -> pd.DataFrame:
         track_name = track_dir.name
         track_index = int(track_name.replace("track_", ""))
 
+        # --- NEW: recover true track_id from metadata.json if available
+        meta_path = track_dir / "metadata.json"
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r") as f:
+                    metadata = json.load(f)
+                track_id = metadata.get("track_id", track_index)
+            except Exception as e:
+                print(f"[WARN] Failed to load metadata.json for {track_dir}: {e}")
+                track_id = track_index
+        else:
+            track_id = track_index
+
         # loop over theta directories within each track
         for theta_dir in sorted(track_dir.glob("theta_*")):
             if not theta_dir.is_dir():
@@ -150,6 +163,7 @@ def summarize_all_runs(output_base: str) -> pd.DataFrame:
                 summary = summarize_srim_output(theta_dir)
                 summary["theta_eV"] = theta_val
                 summary["track_index"] = track_index
+                summary["track_id"] = track_id  # <-- NEW: store the true track_id
                 summary["track_folder"] = str(track_dir)
                 summary["theta_folder"] = str(theta_dir)
                 summaries.append(summary)
@@ -159,7 +173,14 @@ def summarize_all_runs(output_base: str) -> pd.DataFrame:
     if not summaries:
         raise RuntimeError(f"No SRIM outputs found under {output_base}")
 
+    # build dataframe
     df = pd.DataFrame(summaries)
-    df.sort_values(["track_index", "theta_eV"], inplace=True)
+    df.sort_values(["track_id", "theta_eV"], inplace=True)
     df.reset_index(drop=True, inplace=True)
+
+    # --- NEW: save CSV to disk for later analysis
+    csv_path = base / "srim_summary.csv"
+    df.to_csv(csv_path, index=False)
+    print(f"[INFO] Saved SRIM summary DataFrame → {csv_path}")
+
     return df

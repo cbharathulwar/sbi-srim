@@ -287,7 +287,7 @@ def run_srim_multi_track(
     samples_dict,
     x_test,
     track_ids,
-    srim_directory,
+    srim_directory,   # shared path where TRIM.exe lives
     output_base,
     ion_symbol="C",
     number_ions=200,
@@ -295,11 +295,11 @@ def run_srim_multi_track(
     density_g_cm3=3.51,
     width_A=15000.0,
     overwrite=False,
-    n_jobs=None
+    n_jobs=None  # not used
 ):
     """
-    Run SRIM for multiple test tracks, each with its own posterior-sampled energies.
-    Parallelized across tracks for faster execution.
+    Run SRIM for multiple test tracks, one at a time, using a shared SRIM installation.
+    Avoids sandboxing and avoids parallel execution.
     """
 
     output_base = Path(output_base)
@@ -311,41 +311,34 @@ def run_srim_multi_track(
     if len(track_ids) != len(x_test):
         raise ValueError("track_ids must match x_test length")
 
-    if n_jobs is None:
-        n_jobs = max(1, multiprocessing.cpu_count() - 2)
+    print(f"[PPC] Running SRIM serially for {len(track_ids)} tracks ...")
 
-    print(f"[PPC] Parallel SRIM run using {n_jobs} cores ...")
+    results = []
 
-    # --------------------------------------------------
-    # INNER FUNCTION: runs one track at a time
-    # --------------------------------------------------
-    def process_track(i, x, track_id):
+    for i, (x, track_id) in enumerate(zip(x_test, track_ids)):
         print(f"\n[PPC] === Running SRIM for Track ID {track_id} (Index {i}) ===")
 
-        track_id = int(track_id)  # ensure it's an int for dict keys
-        track_dir = output_base / f"track_{int(track_id):04d}"
+        track_id = int(track_id)
+        track_dir = output_base / f"track_{track_id:04d}"
         track_dir.mkdir(parents=True, exist_ok=True)
-        srim_sandbox = track_dir / "srim_run"
-        srim_sandbox.mkdir(parents=True, exist_ok=True)
 
-
-        theta_samples = samples_dict[int(track_id)].detach().cpu().numpy().flatten().tolist()
+        theta_samples = samples_dict[track_id].detach().cpu().numpy().flatten().tolist()
         theta_samples = sorted(set(round(t, 2) for t in theta_samples))
 
         metadata = {
-            "track_index": int(i),
-            "track_id": int(track_id),
+            "track_index": i,
+            "track_id": track_id,
             "x_test": x.detach().cpu().numpy().tolist(),
             "num_samples": len(theta_samples),
             "theta_samples_eV": theta_samples,
-            "timestamp": datetime.now().isoformat(), 
+            "timestamp": datetime.now().isoformat(),
         }
         with open(track_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
         run_srim_batch(
             thetas_eV=theta_samples,
-            srim_directory=srim_sandbox,
+            srim_directory=srim_directory,   # use the shared SRIM folder directly
             output_base=track_dir,
             ion_symbol=ion_symbol,
             number_ions=number_ions,
@@ -356,15 +349,7 @@ def run_srim_multi_track(
         )
 
         print(f"[PPC] Track {track_id} complete → results in {track_dir}")
-        return str(track_dir)
+        results.append(str(track_dir))
 
-    # --------------------------------------------------
-    # RUN ALL TRACKS IN PARALLEL
-    # --------------------------------------------------
-    results = Parallel(n_jobs=n_jobs, backend="loky")(
-        delayed(process_track)(i, x, track_id)
-        for i, (x, track_id) in enumerate(zip(x_test, track_ids))
-    )
-
-    print(f"\n[PPC] All SRIM PPC runs complete ({len(results)} tracks).")
+    print(f"\n[PPC] All SRIM runs complete ({len(results)} tracks).")
     return results
