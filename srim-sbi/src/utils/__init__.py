@@ -49,7 +49,8 @@ _for_export = [
     "run_srim_multi_track",
     "sample_posterior_theta",
     'tensor_to_observed_dict',
-    'clean_summary_data'
+    'clean_summary_data',
+    'make_x_test'
 ]
 
 __all__ += [name for name in _for_export if name in globals()]

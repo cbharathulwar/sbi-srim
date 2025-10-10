@@ -16,69 +16,10 @@ from joblib import Parallel, delayed
 import multiprocessing
 from srim import TRIM, Ion, Layer, Target
 from srim.output import Results
-def pick_tracks_deterministic(x_obs, track_ids, n=10):
-    """
-    Deterministically select the first n tracks from x_obs.
-    Returns both the subset tensor and their corresponding track IDs.
-    """
-    n = min(n, len(track_ids))
-    idx = torch.arange(n)
-    x_test = x_obs[idx]
-    x_test_ids = [track_ids[i] for i in idx.tolist()]
-    return x_test, x_test_ids, idx
-
-import torch
-
-import torch
-
-
-
-
-
 
 
 import shutil
 from pathlib import Path
-def sample_posterior_bulk(posterior, x_obs, num_samples=100, track_ids=None):
-    """
-    Sample posterior for multiple tracks and store results per track ID.
-
-    Parameters
-    ----------
-    posterior : trained sbi posterior
-        Trained posterior object (e.g., DirectPosterior)
-    x_obs : torch.Tensor of shape (n_tracks, n_features)
-        Observation tensor
-    num_samples : int
-        Number of posterior samples per track
-    track_ids : list[int] | None
-        Optional original indices for each observation in x_obs
-
-    Returns
-    -------
-    samples_by_track : dict[int, torch.Tensor]
-        Mapping track_id -> samples [num_samples, n_params]
-    samples_tensor : torch.Tensor
-        Combined samples [n_tracks, num_samples, n_params]
-    """
-    samples_by_track = {}
-    all_tensors = []
-
-    # Iterate over each observation and its associated track ID
-    for i, x in enumerate(x_obs):
-        with torch.no_grad():
-            theta_samples = posterior.sample((num_samples,), x=x)
-
-        # Determine the correct track ID
-        track_id = int(track_ids[i]) if track_ids is not None else i
-
-        samples_by_track[track_id] = theta_samples
-        all_tensors.append(theta_samples)
-
-    samples_tensor = torch.stack(all_tensors)
-    return samples_by_track, samples_tensor
-
-
 
 import io
 import srim.output
@@ -260,6 +201,12 @@ def run_srim_batch(thetas_eV,
     return results
 
 
+from pathlib import Path
+from datetime import datetime
+import json
+import torch
+import numpy as np
+
 def run_srim_multi_track(
     samples_dict,
     x_test,
@@ -272,11 +219,14 @@ def run_srim_multi_track(
     density_g_cm3=3.51,
     width_A=15000.0,
     overwrite=False,
-    n_jobs=None  # not used
+    df_summary=None,  # ✅ dataframe mapping track_id → ion, energy_keV
+    n_jobs=None       # (not used)
 ):
     """
     Run SRIM for multiple test tracks, one at a time, using a shared SRIM installation.
-    Avoids sandboxing and avoids parallel execution.
+    Each track corresponds to one observed x_test entry and one posterior theta set.
+    Creates human-readable output folders like:
+        track_<ion>_<energy>keV_<short_hash>/
     """
 
     output_base = Path(output_base)
@@ -293,29 +243,96 @@ def run_srim_multi_track(
     results = []
 
     for i, (x, track_id) in enumerate(zip(x_test, track_ids)):
+        track_id = str(track_id)
         print(f"\n[PPC] === Running SRIM for Track ID {track_id} (Index {i}) ===")
 
-        track_id = int(track_id)
-        track_dir = output_base / f"track_{track_id:04d}"
+        # ---------------------------------------------------------------------
+        # ✅ 1. Recover ion, energy, and composite_key from df_summary if available
+        # ---------------------------------------------------------------------
+        ion = ion_symbol
+        energy_keV = None
+        composite_key = None
+
+        if df_summary is not None and "track_id" in df_summary.columns:
+            match = df_summary[df_summary["track_id"] == track_id]
+            if not match.empty:
+                row = match.iloc[0]
+                ion = row.get("ion", ion_symbol)
+                energy_keV = row.get("energy_keV", row.get("energy", None))
+                composite_key = row.get("composite_key", f"{ion}_unknown")
+
+        # ---------------------------------------------------------------------
+        # ✅ 2. Build descriptive, human-readable track folder name
+        # ---------------------------------------------------------------------
+        short_hash = track_id[:6]
+        if energy_keV is not None:
+            try:
+                energy_int = int(float(energy_keV))
+                folder_name = f"track_{ion}_{energy_int}keV_{short_hash}"
+            except Exception:
+                folder_name = f"track_{ion}_unknown_{short_hash}"
+        else:
+            folder_name = f"track_{ion}_unknown_{short_hash}"
+
+        track_dir = output_base / folder_name
         track_dir.mkdir(parents=True, exist_ok=True)
 
-        theta_samples = samples_dict[track_id].detach().cpu().numpy().flatten().tolist()
-        theta_samples = sorted(set(round(t, 2) for t in theta_samples))
+        # ---------------------------------------------------------------------
+        # ✅ 3. Convert posterior θ samples safely
+        # ---------------------------------------------------------------------
+        if track_id in samples_dict:
+            theta_samples = samples_dict[track_id]
+        elif track_id.isdigit() and int(track_id) in samples_dict:
+            theta_samples = samples_dict[int(track_id)]
+        else:
+            raise KeyError(f"Track ID {track_id} not found in samples_dict")
 
+        if isinstance(theta_samples, torch.Tensor):
+            theta_samples = theta_samples.detach().cpu().numpy().flatten().tolist()
+        elif isinstance(theta_samples, np.ndarray):
+            theta_samples = theta_samples.flatten().tolist()
+        else:
+            theta_samples = list(theta_samples)
+
+        theta_samples = sorted(set(round(float(t), 2) for t in theta_samples))
+
+        # ---------------------------------------------------------------------
+        # ✅ 4. Convert x_test row → list (float)
+        # ---------------------------------------------------------------------
+        if isinstance(x, torch.Tensor):
+            x_values = x.detach().cpu().numpy().tolist()
+        elif isinstance(x, np.ndarray):
+            x_values = x.tolist()
+        elif isinstance(x, (pd.Series, dict)):
+            x_values = [x["mean_depth_A"], x["std_depth_A"], x["vacancies_per_ion"]]
+        else:
+            x_values = list(x)
+
+        # ---------------------------------------------------------------------
+        # ✅ 5. Write metadata.json
+        # ---------------------------------------------------------------------
         metadata = {
             "track_index": i,
             "track_id": track_id,
-            "x_test": x.detach().cpu().numpy().tolist(),
+            "ion": ion,
+            "energy_keV": energy_keV,
+            "composite_key": composite_key,
+            "track_folder": str(track_dir),
+            "x_test": x_values,
             "num_samples": len(theta_samples),
             "theta_samples_eV": theta_samples,
             "timestamp": datetime.now().isoformat(),
         }
+
         with open(track_dir / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=2)
 
+        # ---------------------------------------------------------------------
+        # ✅ 6. Run SRIM for this track
+        # ---------------------------------------------------------------------
         run_srim_batch(
             thetas_eV=theta_samples,
-            srim_directory=srim_directory,   # use the shared SRIM folder directly
+            srim_directory=srim_directory,
             output_base=track_dir,
             ion_symbol=ion_symbol,
             number_ions=number_ions,
@@ -328,5 +345,5 @@ def run_srim_multi_track(
         print(f"[PPC] Track {track_id} complete → results in {track_dir}")
         results.append(str(track_dir))
 
-    print(f"\n[PPC] All SRIM runs complete ({len(results)} tracks).")
+    print(f"\n[PPC] ✅ All SRIM runs complete ({len(results)} tracks).")
     return results

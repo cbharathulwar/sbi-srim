@@ -105,82 +105,231 @@ def summarize_srim_output(folder: str) -> Dict[str, float]:
     }
 
 
-import pandas as pd
+import os, re, json, math
 from pathlib import Path
-def summarize_all_runs(output_base: str) -> pd.DataFrame:
-    """
-    Loop through all tracks and their theta_* folders under output_base,
-    summarize each SRIM run, and return a DataFrame with hierarchical metadata.
+from datetime import datetime
+from typing import Optional, Tuple, Dict, Any, List
 
-    Structure expected:
-        output_base/
-        ├── track_00/
-        │   ├── metadata.json
-        │   ├── theta_335/
-        │   ├── theta_396/
-        │   └── theta_466/
-        ├── track_01/
-        │   ├── theta_...
-        │   └── metadata.json
-        ...
+import numpy as np
+import pandas as pd
+
+
+def _parse_theta_folder(theta_dir: Path) -> Tuple[Optional[int], Optional[float]]:
+    """
+    Parse folder name 'theta_*' into:
+      - theta_id (int) if suffix is pure digits, e.g. 'theta_335' -> 335
+      - theta_folder_val (float) if suffix parses as float, e.g. 'theta_20000.0' -> 20000.0
+    If neither pattern fits, returns (None, None).
+    """
+    m = re.match(r"^theta_(.+)$", theta_dir.name)
+    if not m:
+        return None, None
+    token = m.group(1)
+
+    if re.fullmatch(r"\d+", token):
+        return int(token), None
+
+    try:
+        return None, float(token)
+    except ValueError:
+        return None, None
+
+
+def _safe_get(d: Dict[str, Any], keys: List[str], default=None):
+    for k in keys:
+        if k in d:
+            return d[k]
+    return default
+
+
+def _to_float(x):
+    if x is None:
+        return None
+    try:
+        return float(x)
+    except Exception:
+        return None
+
+
+def _make_composite_key(ion: Any, energy_keV: Any) -> Optional[str]:
+    ion_ok = ion is not None
+    e = _to_float(energy_keV)
+    if (not ion_ok) or (e is None) or (math.isnan(e)):
+        return None
+    return f"ion={ion}|E={int(round(e))}keV"
+
+
+def summarize_all_runs(
+    output_base: str,
+    *,
+    label: Optional[str] = None,
+    strict: bool = True,
+) -> pd.DataFrame:
+    """
+    Walk output_base/track_*/theta_*/ and summarize each SRIM run into a PPC-ready DataFrame.
+
+    Final stable columns:
+      - ion, energy_keV, composite_key
+      - track_id, track_index, track_folder, theta_folder
+      - theta_id, theta_folder_val, theta_file_eV
+      - mean_depth_A, std_depth_A, vacancies_per_ion
+
+    Matching guarantee:
+      track_id ↔ composite_key ↔ (ion, energy_keV)
+      fully consistent with preprocess(), make_x_test(), and run_srim_multi_track().
     """
     base = Path(output_base)
-    summaries = []
+    if not base.exists():
+        raise FileNotFoundError(f"output_base not found: {output_base}")
 
-    # loop over all track directories
+    rows = []
+    n_tracks = 0
+    n_theta_runs = 0
+
     for track_dir in sorted(base.glob("track_*")):
         if not track_dir.is_dir():
             continue
 
+        # ------------------------------------------------------------
+        # ✅ Parse track folder safely (supports hash or detailed name)
+        # ------------------------------------------------------------
         track_name = track_dir.name
-        track_index = int(track_name.replace("track_", ""))
+        if not track_name.startswith("track_"):
+            raise RuntimeError(f"Bad track folder name: {track_dir}")
 
-        # --- NEW: recover true track_id from metadata.json if available
+        # Example: track_C_300keV_a1b2c3 → parts = ['C','300keV','a1b2c3']
+        parts = track_name.replace("track_", "").split("_")
+        ion = None
+        energy_keV = None
+        track_id = None
+
+        for p in parts:
+            if p.lower().endswith("keV"):
+                try:
+                    energy_keV = float(p.lower().replace("kev", ""))
+                except ValueError:
+                    pass
+            elif len(p) == 6 or len(p) == 8:
+                track_id = p
+            elif p.isalpha():
+                ion = p
+
+        # fallback if any missing
+        if ion is None:
+            ion = "C"
+        if track_id is None:
+            track_id = parts[-1]
+        track_index = None
+
+        # ------------------------------------------------------------
+        # ✅ Metadata loading (takes precedence over folder parsing)
+        # ------------------------------------------------------------
+        metadata = {}
         meta_path = track_dir / "metadata.json"
         if meta_path.exists():
             try:
                 with open(meta_path, "r") as f:
                     metadata = json.load(f)
-                track_id = metadata.get("track_id", track_index)
+                # override with metadata if valid
+                ion = metadata.get("ion", ion)
+                energy_keV = metadata.get("energy_keV", energy_keV)
+                track_id = str(metadata.get("track_id", track_id))
+                track_index = metadata.get("track_index", track_index)
             except Exception as e:
-                print(f"[WARN] Failed to load metadata.json for {track_dir}: {e}")
-                track_id = track_index
-        else:
-            track_id = track_index
+                if strict:
+                    raise RuntimeError(f"Failed to read {meta_path}: {e}") from e
+                print(f"[WARN] Failed to read {meta_path}: {e}")
 
-        # loop over theta directories within each track
-        for theta_dir in sorted(track_dir.glob("theta_*")):
+        # standardize
+        energy_keV = _to_float(energy_keV)
+        composite_key = _make_composite_key(ion, energy_keV)
+
+        # ------------------------------------------------------------
+        # ✅ Parse theta_* runs (required)
+        # ------------------------------------------------------------
+        theta_dirs = sorted(track_dir.glob("theta_*"))
+        if strict and not theta_dirs:
+            raise RuntimeError(f"No theta_* subfolders under {track_dir}")
+
+        for theta_dir in theta_dirs:
             if not theta_dir.is_dir():
                 continue
 
-            theta_str = theta_dir.name.replace("theta_", "")
-            try:
-                theta_val = float(theta_str)
-            except ValueError:
-                theta_val = None
+            theta_id, theta_folder_val = _parse_theta_folder(theta_dir)
+            s = summarize_srim_output(str(theta_dir))
 
-            try:
-                summary = summarize_srim_output(theta_dir)
-                summary["theta_eV"] = theta_val
-                summary["track_index"] = track_index
-                summary["track_id"] = track_id  # <-- NEW: store the true track_id
-                summary["track_folder"] = str(track_dir)
-                summary["theta_folder"] = str(theta_dir)
-                summaries.append(summary)
-            except Exception as e:
-                print(f"[WARN] Failed to summarize {theta_dir}: {e}")
+            row = {
+                "track_folder": str(track_dir),
+                "theta_folder": str(theta_dir),
+                "track_index": track_index,
+                "track_id": track_id,
+                "ion": ion,
+                "energy_keV": energy_keV,
+                "composite_key": composite_key,
+                "theta_id": theta_id,
+                "theta_folder_val": theta_folder_val,
+                "theta_file_eV": s.get("theta_eV", None),
+                "mean_depth_A": s["mean_depth_A"],
+                "std_depth_A": s["std_depth_A"],
+                "vacancies_per_ion": s["vacancies_per_ion"],
+            }
 
-    if not summaries:
+            # optional consistency check
+            if (row["theta_folder_val"] is not None) and (row["theta_file_eV"] is not None):
+                diff = abs(float(row["theta_folder_val"]) - float(row["theta_file_eV"]))
+                if diff > 1e-6:
+                    print(f"[WARN] theta mismatch in {theta_dir}: "
+                          f"folder={row['theta_folder_val']} vs file={row['theta_file_eV']} (eV)")
+
+            rows.append(row)
+            n_theta_runs += 1
+
+        n_tracks += 1
+
+    if not rows:
         raise RuntimeError(f"No SRIM outputs found under {output_base}")
 
-    # build dataframe
-    df = pd.DataFrame(summaries)
-    df.sort_values(["track_id", "theta_eV"], inplace=True)
-    df.reset_index(drop=True, inplace=True)
+    # ------------------------------------------------------------
+    # ✅ Assemble DataFrame
+    # ------------------------------------------------------------
+    x_check = (
+        pd.DataFrame(rows)
+        .sort_values(["ion", "energy_keV", "track_id", "theta_id"], na_position="last")
+        .reset_index(drop=True)
+    )
 
-    # --- NEW: save CSV to disk for later analysis
-    csv_path = base / "srim_summary.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"[INFO] Saved SRIM summary DataFrame → {csv_path}")
+    # ------------------------------------------------------------
+    # ✅ Integrity + auto-fix
+    # ------------------------------------------------------------
+    required = ["mean_depth_A", "std_depth_A", "vacancies_per_ion", "track_id"]
+    missing = [c for c in required if c not in x_check.columns]
+    if missing:
+        raise RuntimeError(f"Missing required columns: {missing}")
 
-    return df
+    # fill composite_key if missing
+    if "composite_key" not in x_check.columns or x_check["composite_key"].isna().any():
+        x_check["composite_key"] = x_check.apply(
+            lambda r: _make_composite_key(r.get("ion"), r.get("energy_keV")), axis=1
+        )
+
+    # check missing ion/energy
+    if x_check["ion"].isna().any() or x_check["energy_keV"].isna().any():
+        bad = x_check.loc[x_check["ion"].isna() | x_check["energy_keV"].isna(),
+                          ["track_folder", "track_id", "ion", "energy_keV"]]
+        msg = "[ERROR] Missing ion/energy_keV; fix metadata.json files."
+        if strict:
+            raise RuntimeError(f"{msg}\n{bad.to_string(index=False)}")
+        else:
+            print(msg)
+
+    # ------------------------------------------------------------
+    # ✅ Save summarized CSV
+    # ------------------------------------------------------------
+    stamp = label or datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_csv = Path(output_base) / f"srim_summary_{stamp}.csv"
+    x_check.to_csv(out_csv, index=False)
+
+    print(f"[INFO] Summarized {n_tracks} track(s), {n_theta_runs} theta run(s).")
+    print(f"[INFO] Saved SRIM summary DataFrame → {out_csv}")
+
+    return x_check

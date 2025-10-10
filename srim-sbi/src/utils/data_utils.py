@@ -13,43 +13,45 @@ import numpy as np
 import torch
 
 
+import pandas as pd
+import numpy as np
+import torch
+from pathlib import Path
+import hashlib
+
 def preprocess(data_path):
     """
     Load SRIM data, group by ion and energy, and compute summary statistics
     for each (ion, energy) combination.
-
-    Parameters
-    ----------
-    data_path : str or Path
-        Path to the CSV file containing SRIM data.
-        Expected columns: ["x", "y", "z", "ion", "energy"]
-
-    Returns
-    -------
-    x_obs : torch.Tensor
-        Tensor of summary features [mean_depth_a, std_depth_a, vacancies_per_ion].
-    theta : torch.Tensor
-        Tensor of corresponding energies.
-    track_ids : list[int]
-        Deterministic list of unique track identifiers (one per group).
-    grouped : pd.core.groupby.DataFrameGroupBy
-        Grouped DataFrame (for inspection).
-    df_summary : pd.DataFrame
-        Summary DataFrame of all tracks with feature columns.
     """
+    import hashlib
+    import numpy as np
+    import pandas as pd
+    import torch
+    from pathlib import Path
 
     # --- Load data ---
     data_path = Path(data_path)
     df = pd.read_csv(data_path)
     df.columns = ["x", "y", "z", "ion", "energy"]
 
-    grouped = df.groupby(["ion", "energy"], sort=True)
+    # ✅ Convert numeric columns safely
+    for c in ["x", "y", "z", "energy"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    x_obs, theta, track_ids = [], [], []
+    # Drop rows that are fully invalid
+    df = df.dropna(subset=["x", "y", "z", "energy"]).reset_index(drop=True)
+
+    grouped = df.groupby(["ion", "energy"], sort=True)
+    x_obs, theta, track_ids, ions, energies = [], [], [], [], []
+
+    def make_track_id(ion, energy):
+        key = f"{ion}_{energy}"
+        return hashlib.md5(key.encode()).hexdigest()[:8]
 
     for (ion, energy), group in grouped:
-        track = group[["x", "y", "z"]].values
-        if len(track) == 0 or np.isnan(track).any():
+        track = group[["x", "y", "z"]].values.astype(float)  # ✅ force float
+        if track.size == 0 or np.isnan(track).any():
             print(f"[WARN] Skipping invalid track for ion={ion}, energy={energy}")
             continue
 
@@ -59,27 +61,26 @@ def preprocess(data_path):
 
         x_obs.append([mean_x, std_x, num_vac])
         theta.append([energy])
-        track_ids.append(len(track_ids))  # deterministic id
+        ions.append(ion)
+        energies.append(energy)
+        track_ids.append(make_track_id(ion, energy))
 
     x_obs = torch.tensor(x_obs, dtype=torch.float32)
     theta = torch.tensor(theta, dtype=torch.float32)
+    composite_keys = [f"{ion}_{int(energy)}keV" for ion, energy in zip(ions, energies)]
 
-    # Optional sanity check
-    if torch.max(x_obs[:, 0]) > 1e4:
-        print("[WARN] Large depth values detected (>10,000). Check SRIM unit scale (Å vs nm).")
-
-    # Create human-readable summary
     df_summary = pd.DataFrame({
         "track_id": track_ids,
-        "mean_depth_a": x_obs[:, 0].numpy(),
-        "std_depth_a": x_obs[:, 1].numpy(),
-        "vacancies_per_ion": x_obs[:, 2].numpy(),
-        "energy": theta[:, 0].numpy()
+        "ion": ions,
+        "energy_keV": energies,
+        "composite_key": composite_keys,
+        "mean_depth_A": x_obs[:, 0].numpy(),
+        "std_depth_A": x_obs[:, 1].numpy(),
+        "vacancies_per_ion": x_obs[:, 2].numpy()
     })
 
     print(f"[INFO] Preprocessed {len(track_ids)} tracks successfully.")
-    print(f"[INFO] Features computed: mean_depth_a, std_depth_a, vacancies_per_ion")
-
+    print(f"[INFO] Unique track IDs generated via MD5 hash of (ion, energy).")
     return x_obs, theta, track_ids, grouped, df_summary
 
 import os
@@ -87,122 +88,169 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def plot_ppc_histograms(df, x_test, x_test_ids, output_dir=None, bins=30, save_plots=True, return_metrics=True):
+
+def make_x_test(df_summary, n_per_energy=1):
     """
-    Posterior Predictive Check (PPC) — GLOBAL comparison between SRIM-simulated
-    and observed summary features (aggregated across all selected tracks).
+    Select representative test tracks from the summarized SRIM data.
 
     Parameters
     ----------
-    df : pd.DataFrame
-        Cleaned SRIM summary containing columns ['mean_depth_a', 'std_depth_a', 'vacancies_per_ion'].
-    x_test : torch.Tensor
-        Observed tensor, shape (n_tracks, 3) → [mean_x, std_x, num_vacancies].
-    x_test_ids : list[int]
-        Track IDs corresponding to x_test rows (for logging/reference).
-    output_dir : str | None
-        Folder to save plots and metrics.
-    bins : int
-        Number of bins for histograms.
-    save_plots : bool
-        Whether to save plots as PNGs.
-    return_metrics : bool
-        Whether to return a DataFrame of Δ%, Z-score per feature.
+    df_summary : pd.DataFrame
+        DataFrame from preprocess(), containing:
+        ['ion', 'energy_keV', 'mean_depth_A', 'std_depth_A',
+         'vacancies_per_ion', 'track_id', 'composite_key']
+    n_per_energy : int
+        Number of tracks to sample per unique (ion, energy_keV) group.
 
     Returns
     -------
-    pd.DataFrame | None
-        Global metrics (Δ%, Z-score per feature).
+    x_test : pd.DataFrame
+        Subset of df_summary ready for SRIM simulation and PPC.
+    x_test_ids : list[str]
+        Ordered list of track IDs corresponding to x_test rows.
     """
 
-    # ---- Setup ----
+    required = {
+        "ion", "energy_keV",
+        "mean_depth_A", "std_depth_A", "vacancies_per_ion"
+    }
+    if not required.issubset(df_summary.columns):
+        raise ValueError(f"df_summary must contain {required}")
+
+    df_sorted = df_summary.sort_values(["ion", "energy_keV"]).reset_index(drop=True)
+
+    sampled_rows = []
+    for (ion, energy), group in df_sorted.groupby(["ion", "energy_keV"]):
+        # pick one or up to n_per_energy samples per energy level
+        pick = group.sample(n=min(n_per_energy, len(group)), random_state=42)
+        sampled_rows.append(pick)
+
+    x_test = pd.concat(sampled_rows).reset_index(drop=True)
+
+    # ensure correct composite_key and track_id exist
+    if "composite_key" not in x_test.columns:
+        x_test["composite_key"] = x_test.apply(
+            lambda r: f"{r['ion']}_{int(r['energy_keV'])}keV", axis=1
+        )
+
+    if "track_id" not in x_test.columns:
+        import hashlib
+        x_test["track_id"] = x_test["composite_key"].apply(
+            lambda s: hashlib.md5(s.encode()).hexdigest()[:8]
+        )
+
+    x_test_ids = x_test["track_id"].tolist()
+
+    print(f"[INFO] Selected {len(x_test)} test tracks "
+          f"({len(x_test['energy_keV'].unique())} unique energies).")
+
+    return x_test, x_test_ids
+
+
+
+
+
+
+
+
+
+def plot_ppc_histograms(
+    df,
+    x_test,
+    x_test_ids,
+    output_dir=None,
+    bins=30,
+    save_plots=True,
+    return_metrics=True,
+):
+    """
+    Global distribution check between simulated SRIM summaries and observed means.
+    (Not per-track PPC, but an aggregated sanity check.)
+    """
+    import numpy as np, matplotlib.pyplot as plt, os
+    from datetime import datetime
+
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    if not isinstance(df, pd.DataFrame):
-        raise TypeError("`df` must be a pandas DataFrame.")
-    if df.empty:
-        raise ValueError("`df` is empty.")
-    if x_test.ndim != 2 or x_test.shape[1] != 3:
-        raise ValueError("`x_test` must be (n_tracks, 3).")
+    if not isinstance(df, pd.DataFrame) or df.empty:
+        raise ValueError("`df` must be a non-empty DataFrame.")
 
-    # ---- Convert x_test tensor to numpy ----
-    x_test_np = x_test.detach().cpu().numpy()
+    # Accept torch or numpy input
+    if hasattr(x_test, "detach"):
+        x_test_np = x_test.detach().cpu().numpy()
+    else:
+        x_test_np = np.asarray(x_test)
+    if x_test_np.ndim != 2 or x_test_np.shape[1] != 3:
+        raise ValueError("`x_test` must have shape (n_tracks, 3).")
 
-    # Compute mean across all observed tracks → global "observed mean"
     observed_mean = np.mean(x_test_np, axis=0)
     feature_map = {
-        "mean_depth_a": observed_mean[0],
-        "std_depth_a": observed_mean[1],
+        "mean_depth_A": observed_mean[0],
+        "std_depth_A": observed_mean[1],
         "vacancies_per_ion": observed_mean[2],
     }
 
-    features = ["mean_depth_a", "std_depth_a", "vacancies_per_ion"]
+    features = ["mean_depth_A", "std_depth_A", "vacancies_per_ion"]
     titles = ["Mean Depth (Å)", "Std. Depth (Å)", "Vacancies per Ion"]
 
-    print(f"[INFO] Performing GLOBAL PPC across {len(x_test_ids)} tracks.")
-    print(f"[INFO] Using global observed means: {feature_map}")
+    print(f"[INFO] Global SRIM–Observed Comparison across {len(x_test_ids)} tracks.")
+    print(f"[INFO] Using observed global means: {feature_map}")
 
-    # ---- Compute metrics and plot ----
     all_metrics = []
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     for feat, title in zip(features, titles):
         if feat not in df.columns:
-            print(f"[WARN] Missing column '{feat}' in SRIM summary. Skipping.")
+            print(f"[WARN] Missing '{feat}' in SRIM summary; skipping.")
             continue
 
         vals = df[feat].dropna().values
-        if len(vals) == 0:
-            print(f"[WARN] No SRIM values for '{feat}'. Skipping.")
+        if vals.size == 0:
+            print(f"[WARN] No data for '{feat}'. Skipping.")
             continue
 
-        obs_val = feature_map[feat]
         mu, sigma = np.mean(vals), np.std(vals)
-
-        # Compute metrics
-        delta_percent = abs(obs_val - mu) / mu * 100
-        z_score = (obs_val - mu) / sigma
+        obs_val = feature_map[feat]
+        delta_percent = abs(obs_val - mu) / (mu if mu != 0 else 1) * 100
+        z_score = np.nan if sigma == 0 else (obs_val - mu) / sigma
 
         all_metrics.append({
-            "Feature": feat,
-            "μ_sim": mu,
-            "σ_sim": sigma,
+            "feature": feat,
+            "mu_sim": mu,
+            "sigma_sim": sigma,
             "obs_mean": obs_val,
-            "Δ%": delta_percent,
-            "Z": z_score,
+            "delta_percent": delta_percent,
+            "z_score": z_score,
+            "timestamp": stamp,
         })
 
-        # ---- Plot global histogram ----
         if save_plots:
             plt.figure(figsize=(6, 4))
-            plt.hist(vals, bins=bins, alpha=0.7, edgecolor="k", label="Simulated (SRIM)")
+            plt.hist(vals, bins=bins, alpha=0.7, edgecolor="k", density=True, label="Simulated")
             plt.axvline(mu, color="blue", linestyle=":", label=f"μ = {mu:.2f}")
-            plt.axvline(mu + sigma, color="gray", linestyle=":", alpha=0.5)
-            plt.axvline(mu - sigma, color="gray", linestyle=":", alpha=0.5)
-            plt.axvline(obs_val, color="red", linestyle="--", label=f"Observed Mean = {obs_val:.2f}")
-
-            plt.title(f"Global PPC — {title}")
+            plt.axvline(obs_val, color="red", linestyle="--", label=f"Observed = {obs_val:.2f}")
+            plt.title(f"Global Distribution — {title}")
             plt.xlabel(title)
-            plt.ylabel("Count")
+            plt.ylabel("Density")
             plt.legend()
             plt.tight_layout()
-
             if output_dir:
-                plt.savefig(os.path.join(output_dir, f"PPC_global_{feat}.png"))
+                plt.savefig(os.path.join(output_dir, f"PPC_global_{feat}_{stamp}.png"))
             plt.close()
 
-    # ---- Save metrics ----
-    if return_metrics:
-        metrics_df = pd.DataFrame(all_metrics)
-        if output_dir:
-            metrics_path = os.path.join(output_dir, "PPC_metrics_global.csv")
-            metrics_df.to_csv(metrics_path, index=False)
-            print(f"[INFO] Global PPC metrics saved → {metrics_path}")
+    if not return_metrics:
+        return None
 
-        print("\n[PPC] Global Summary Metrics:")
-        print(metrics_df.to_string(index=False))
-        return metrics_df
+    metrics_df = pd.DataFrame(all_metrics)
+    if output_dir:
+        metrics_path = os.path.join(output_dir, f"PPC_metrics_global_{stamp}.csv")
+        metrics_df.to_csv(metrics_path, index=False)
+        print(f"[INFO] Saved metrics → {metrics_path}")
 
-    return None
+    print("\n[PPC] Global Summary Metrics:")
+    print(metrics_df.to_string(index=False))
+    return metrics_df
 
 def tensor_to_observed_dict(x_test, x_test_ids):
     """
