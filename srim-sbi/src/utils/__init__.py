@@ -35,7 +35,7 @@ __all__ = [
 ]
 
 _for_export = [
-    "pick_random_tracks",
+    "pick_tracks_deterministic",
     "create_observed_dataframe",
     "run_srim_for_theta",
     "run_srim_batch",
@@ -47,7 +47,9 @@ _for_export = [
     "summarize_all_runs",
     "plot_ppc_histograms",
     "run_srim_multi_track",
-    "sample_posterior_theta"
+    "sample_posterior_theta",
+    'tensor_to_observed_dict',
+    'clean_summary_data'
 ]
 
 __all__ += [name for name in _for_export if name in globals()]

@@ -16,39 +16,16 @@ from joblib import Parallel, delayed
 import multiprocessing
 from srim import TRIM, Ion, Layer, Target
 from srim.output import Results
-
-
-def pick_random_tracks(x_obs, n=10, seed=None):
+def pick_tracks_deterministic(x_obs, track_ids, n=10):
     """
-    Randomly select n tracks from x_obs and return both
-    the selected rows and their indices (for reproducibility).
-
-    Parameters
-    ----------
-    x_obs : torch.Tensor
-        Full observation tensor, shape (n_tracks, n_features)
-    n : int
-        Number of tracks to sample
-    seed : int | None
-        Optional random seed for reproducibility
-
-    Returns
-    -------
-    x_test : torch.Tensor
-        Sampled observation rows
-    idx : torch.Tensor
-        Indices of sampled tracks in x_obs
+    Deterministically select the first n tracks from x_obs.
+    Returns both the subset tensor and their corresponding track IDs.
     """
-    if seed is not None:
-        torch.manual_seed(seed)
-
-    total_tracks = x_obs.shape[0]
-    n = min(n, total_tracks)
-
-    idx = torch.randperm(total_tracks)[:n]
+    n = min(n, len(track_ids))
+    idx = torch.arange(n)
     x_test = x_obs[idx]
-
-    return x_test, idx
+    x_test_ids = [track_ids[i] for i in idx.tolist()]
+    return x_test, x_test_ids, idx
 
 import torch
 
