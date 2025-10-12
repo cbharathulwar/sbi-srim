@@ -19,51 +19,63 @@ import torch
 from pathlib import Path
 import hashlib
 
-def preprocess(data_path):
-    """
-    Load SRIM data, group by ion and energy, and compute summary statistics
-    for each (ion, energy) combination.
-    """
-    import hashlib
-    import numpy as np
-    import pandas as pd
-    import torch
-    from pathlib import Path
+import pandas as pd
+import numpy as np
+import torch
+from pathlib import Path
 
-    # --- Load data ---
+def preprocess(data_path, chunk_size=2000, target_tracks_per_energy=3):
+    """
+    Load SRIM data, group by ion and energy, and create multiple tracks per energy.
+    
+    Parameters
+    ----------
+    data_path : str | Path
+        Path to SRIM CSV data file.
+    chunk_size : int, default=2000
+        Number of ions per track chunk (affects variance within tracks).
+    target_tracks_per_energy : int, default=3
+        Desired number of sub-tracks to extract per (ion, energy) group.
+    """
     data_path = Path(data_path)
     df = pd.read_csv(data_path)
     df.columns = ["x", "y", "z", "ion", "energy"]
 
-    # ✅ Convert numeric columns safely
+    # Convert and clean
     for c in ["x", "y", "z", "energy"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-
-    # Drop rows that are fully invalid
     df = df.dropna(subset=["x", "y", "z", "energy"]).reset_index(drop=True)
 
     grouped = df.groupby(["ion", "energy"], sort=True)
     x_obs, theta, track_ids, ions, energies = [], [], [], [], []
-
-    def make_track_id(ion, energy):
-        key = f"{ion}_{energy}"
-        return hashlib.md5(key.encode()).hexdigest()[:8]
+    grouped_info = {}
 
     for (ion, energy), group in grouped:
-        track = group[["x", "y", "z"]].values.astype(float)  # ✅ force float
-        if track.size == 0 or np.isnan(track).any():
-            print(f"[WARN] Skipping invalid track for ion={ion}, energy={energy}")
-            continue
+        n = len(group)
 
-        mean_x = np.mean(track[:, 0])
-        std_x = np.std(track[:, 0])
-        num_vac = track.shape[0]
+        # --- FIXED CHUNKING LOGIC ---
+        n_chunks = min(target_tracks_per_energy, max(1, n // max(1, chunk_size // target_tracks_per_energy)))
+        # -----------------------------
 
-        x_obs.append([mean_x, std_x, num_vac])
-        theta.append([energy])
-        ions.append(ion)
-        energies.append(energy)
-        track_ids.append(make_track_id(ion, energy))
+        grouped_info[f"{ion}_{energy}"] = n_chunks
+
+        for i, sub in enumerate(np.array_split(group, n_chunks)):
+            if sub.empty:
+                continue
+            track = sub[["x", "y", "z"]].values.astype(float)
+            if np.isnan(track).any():
+                continue
+
+            mean_x = np.mean(track[:, 0])
+            std_x = np.std(track[:, 0])
+            num_vac = track.shape[0]
+
+            x_obs.append([mean_x, std_x, num_vac])
+            theta.append([energy])
+            ions.append(ion)
+            energies.append(energy)
+            track_id = f"{ion}_{int(round(energy))}keV_{i+1:04d}"
+            track_ids.append(track_id)
 
     x_obs = torch.tensor(x_obs, dtype=torch.float32)
     theta = torch.tensor(theta, dtype=torch.float32)
@@ -80,74 +92,48 @@ def preprocess(data_path):
     })
 
     print(f"[INFO] Preprocessed {len(track_ids)} tracks successfully.")
-    print(f"[INFO] Unique track IDs generated via MD5 hash of (ion, energy).")
-    return x_obs, theta, track_ids, grouped, df_summary
+    print(f"[INFO] target_tracks_per_energy = {target_tracks_per_energy}, chunk_size = {chunk_size}")
+    print(f"[INFO] Tracks per energy:")
+    print(df_summary.groupby("energy_keV").size())
 
+    return x_obs, theta, track_ids, grouped_info, df_summary
 import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
 
-def make_x_test(df_summary, n_per_energy=1):
+import pandas as pd
+import numpy as np
+def make_x_test(df_summary, n_per_energy=1, random_state=42):
     """
-    Select representative test tracks from the summarized SRIM data.
+    Select representative test tracks (subsampled per energy level).
 
-    Parameters
-    ----------
-    df_summary : pd.DataFrame
-        DataFrame from preprocess(), containing:
-        ['ion', 'energy_keV', 'mean_depth_A', 'std_depth_A',
-         'vacancies_per_ion', 'track_id', 'composite_key']
-    n_per_energy : int
-        Number of tracks to sample per unique (ion, energy_keV) group.
-
-    Returns
-    -------
-    x_test : pd.DataFrame
-        Subset of df_summary ready for SRIM simulation and PPC.
-    x_test_ids : list[str]
-        Ordered list of track IDs corresponding to x_test rows.
+    Groups only by energy, because (ion, energy) pairs are already unique in preprocess().
     """
 
-    required = {
-        "ion", "energy_keV",
-        "mean_depth_A", "std_depth_A", "vacancies_per_ion"
-    }
-    if not required.issubset(df_summary.columns):
-        raise ValueError(f"df_summary must contain {required}")
+    # Round energy for stability
+    df_summary = df_summary.copy()
+    df_summary["energy_int"] = df_summary["energy_keV"].round().astype(int)
 
-    df_sorted = df_summary.sort_values(["ion", "energy_keV"]).reset_index(drop=True)
-
+    # Group by energy only
     sampled_rows = []
-    for (ion, energy), group in df_sorted.groupby(["ion", "energy_keV"]):
-        # pick one or up to n_per_energy samples per energy level
-        pick = group.sample(n=min(n_per_energy, len(group)), random_state=42)
+    for energy, group in df_summary.groupby("energy_int"):
+        pick = group.sample(
+            n=min(n_per_energy, len(group)),
+            random_state=random_state
+        )
         sampled_rows.append(pick)
 
     x_test = pd.concat(sampled_rows).reset_index(drop=True)
 
-    # ensure correct composite_key and track_id exist
-    if "composite_key" not in x_test.columns:
-        x_test["composite_key"] = x_test.apply(
-            lambda r: f"{r['ion']}_{int(r['energy_keV'])}keV", axis=1
-        )
+    # Sanity checks
+    print(f"[INFO] Selected {len(x_test)} test tracks ({x_test['energy_int'].nunique()} unique energies).")
+    print(f"[DEBUG] Tracks per energy:\n{x_test.groupby('energy_int').size()}")
 
-    if "track_id" not in x_test.columns:
-        import hashlib
-        x_test["track_id"] = x_test["composite_key"].apply(
-            lambda s: hashlib.md5(s.encode()).hexdigest()[:8]
-        )
-
+    # Return same format as before
     x_test_ids = x_test["track_id"].tolist()
-
-    print(f"[INFO] Selected {len(x_test)} test tracks "
-          f"({len(x_test['energy_keV'].unique())} unique energies).")
-
     return x_test, x_test_ids
-
-
-
 
 
 

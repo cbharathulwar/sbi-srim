@@ -75,7 +75,7 @@ def train_posterior(inference, theta, x_obs, epochs=None):
     return posterior
 
 
-def sample_posterior_thetas(posterior, x_test, num_samples=100):
+def sample_posterior_thetas(posterior, x_test, track_ids=None, num_samples=100):
     """
     Sample theta values from a trained posterior conditioned on test observations.
 
@@ -85,18 +85,24 @@ def sample_posterior_thetas(posterior, x_test, num_samples=100):
         Trained posterior object returned by `train_posterior`.
     x_test : torch.Tensor
         Test observation(s) to condition on. Shape (n_tracks, n_features).
+    track_ids : list[str] | None
+        Optional list of readable track IDs corresponding to x_test.
     num_samples : int
         Number of posterior samples to draw per observation.
 
     Returns
     -------
-    samples_dict : dict[int, torch.Tensor]
-        Mapping from track index -> sampled theta values of shape (num_samples, n_params).
+    samples_dict : dict[str, torch.Tensor]
+        Mapping from track_id -> sampled theta values of shape (num_samples, n_params).
     """
     samples_dict = {}
     for i, x in enumerate(x_test):
-        samples = posterior.sample((num_samples,), x=x)
-        samples_dict[i] = samples
+        with torch.no_grad():
+            samples = posterior.sample((num_samples,), x=x)
+
+        track_id = track_ids[i] if track_ids is not None else str(i)
+        samples_dict[track_id] = samples
+
     return samples_dict
 
 
@@ -106,18 +112,18 @@ def sample_posterior_bulk(posterior, x_obs, num_samples=100, track_ids=None):
 
     Parameters
     ----------
-    posterior : trained sbi posterior
+    posterior : sbi.inference.posteriors.DirectPosterior
         Trained posterior object (e.g., DirectPosterior)
     x_obs : torch.Tensor of shape (n_tracks, n_features)
         Observation tensor
     num_samples : int
         Number of posterior samples per track
-    track_ids : list[int] | None
-        Optional original indices for each observation in x_obs
+    track_ids : list[str] | None
+        Optional readable track IDs corresponding to x_obs.
 
     Returns
     -------
-    samples_by_track : dict[int, torch.Tensor]
+    samples_by_track : dict[str, torch.Tensor]
         Mapping track_id -> samples [num_samples, n_params]
     samples_tensor : torch.Tensor
         Combined samples [n_tracks, num_samples, n_params]
@@ -125,12 +131,10 @@ def sample_posterior_bulk(posterior, x_obs, num_samples=100, track_ids=None):
     samples_by_track = {}
     all_tensors = []
 
-    # Iterate over each observation and its associated track ID
     for i, x in enumerate(x_obs):
         with torch.no_grad():
             theta_samples = posterior.sample((num_samples,), x=x)
 
-        # Determine the correct track ID
         track_id = track_ids[i] if track_ids is not None else str(i)
 
         samples_by_track[track_id] = theta_samples
