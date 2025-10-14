@@ -171,10 +171,9 @@ def run_srim_for_theta(theta_eV,
         print(f"⚠️  [WARN] Non-integer folder name detected → {out_dir}")
     # ---------------------------------------------------------------
     # Safety: handle numeric element codes accidentally passed in
-    if ion_symbol.isdigit():
-        # basic mapping fallback if someone passes atomic number
-        ELEMENT_MAP = {"6": "C", "14": "Si", "13": "Al", "8": "O", "1": "H", "79": "Au" }
-    ion_symbol = ELEMENT_MAP.get(ion_symbol, "C")
+    ELEMENT_MAP = {"6": "C", "14": "Si", "13": "Al", "8": "O", "1": "H", "79": "Au"}
+    if str(ion_symbol).isdigit():
+        ion_symbol = ELEMENT_MAP.get(str(ion_symbol), "C")
     ion = Ion(ion_symbol, energy=float(theta_eV))
     layer = Layer(layer_spec, density=density_g_cm3, width=width_A)
     target = Target([layer])
@@ -295,7 +294,6 @@ def run_srim_multi_track(
 
     output_base = Path(output_base)
     output_base.mkdir(parents=True, exist_ok=True)
-    
 
     if len(track_ids) != len(x_test):
         raise ValueError("track_ids must match x_test length")
@@ -304,7 +302,7 @@ def run_srim_multi_track(
 
     results = []
 
-    for i, (x, track_id) in enumerate(zip(x_test, track_ids)):
+    for i, (x, track_id) in enumerate(zip(x_test.itertuples(index=False), track_ids)):
         track_id = str(track_id)
         print(f"\n[PPC] === Running SRIM for Track ID {track_id} (Index {i}) ===")
 
@@ -317,9 +315,19 @@ def run_srim_multi_track(
             row = df_summary[df_summary["track_id"] == track_id]
             if not row.empty:
                 row = row.iloc[0]
-                ion = row.get("ion", ion_symbol)
+                ion = str(row.get("ion", ion_symbol))
                 energy_keV = row.get("energy_keV", None)
                 composite_key = row.get("composite_key", f"{ion}_{energy_keV}keV")
+
+        # ---------------------------------------------------------------
+        # 🧩 FIX: ensure ion is a valid element symbol, not a number
+        # ---------------------------------------------------------------
+        try:
+            float(ion)
+            print(f"[WARN] Ion value '{ion}' looks numeric — forcing to default '{ion_symbol}'")
+            ion = ion_symbol
+        except Exception:
+            pass
 
         # ---------------------------------------------------------------
         # 2️⃣ Track folder naming — readable & deterministic
@@ -390,17 +398,16 @@ def run_srim_multi_track(
             elif isinstance(obj, dict):
                 return {k: _to_json_safe(v) for k, v in obj.items()}
             else:
-              return obj
+                return obj
 
         metadata_safe = _to_json_safe(metadata)
 
         with open(track_dir / "metadata.json", "w") as f:
             json.dump(metadata_safe, f, indent=2)
 
-# ---------------------------------------------------------------
-# 6️⃣ Run SRIM for each θ sample into srim_runs/
-# ---------------------------------------------------------------
-
+        # ---------------------------------------------------------------
+        # 6️⃣ Run SRIM for each θ sample into srim_runs/
+        # ---------------------------------------------------------------
         print(
             f"[DEBUG multi_track] track={track_id} | E_true_keV={energy_keV} | "
             f"n_theta={len(theta_samples)} | first5={theta_samples[:5]}"
@@ -423,44 +430,29 @@ def run_srim_multi_track(
                 print(f"[DEBUG: run_srim_multi_track] ✅ SRIM output → {folder}")
             except Exception as e:
                 print(f"[DEBUG: run_srim_multi_track] ❌ SRIM failed for {track_id} @ θ={theta_eV} eV → {e}")
-        
-        # for theta_eV in theta_samples:
-        #     run_srim_for_theta(
-        #         theta_eV=theta_eV,
-        #         srim_directory=srim_directory,
-        #         output_base=srim_runs_dir,  # store under srim_runs
-        #         ion_symbol=ion,
-        #         number_ions=number_ions,
-        #         calculation=calculation,
-        #         density_g_cm3=density_g_cm3,
-        #         width_A=width_A,
-        #         overwrite=overwrite
-        #     )
 
         print(f"[PPC] Track {track_id} complete → results in {track_dir}")
         results.append(str(track_dir))
 
-
-        manifest = run_srim_batch(
-            thetas_eV=theta_samples,
-            srim_directory=srim_directory,
-            output_base=srim_runs_dir,
-            ion_symbol=ion,
-            number_ions=number_ions,
-            calculation=calculation,
-            density_g_cm3=density_g_cm3,
-            width_A=width_A,
-            overwrite=overwrite,
-        )
-
-        bad = manifest[manifest["status"] != "OK"]
-        print(f"[MANIFEST] track={track_id} total={len(manifest)} ok={len(manifest)-len(bad)} failed={len(bad)}")
-        if not bad.empty:
-            print(bad.sort_values('theta_eV').to_string(index=False))
-
-    # ---------------------------------------------------------------
-    print(f"[PPC] Track {track_id} complete → results in {track_dir}")
-    results.append(str(track_dir))
+        # ---------------------------------------------------------------
+        # 7️⃣ Batch manifest summary (DISABLED duplicate work)
+        # ---------------------------------------------------------------
+        # manifest = run_srim_batch(
+        #     thetas_eV=theta_samples,
+        #     srim_directory=srim_directory,
+        #     output_base=srim_runs_dir,
+        #     ion_symbol=ion,
+        #     number_ions=number_ions,
+        #     calculation=calculation,
+        #     density_g_cm3=density_g_cm3,
+        #     width_A=width_A,
+        #     overwrite=overwrite,
+        # )
+        #
+        # bad = manifest[manifest["status"] != "OK"]
+        # print(f"[MANIFEST] track={track_id} total={len(manifest)} ok={len(manifest)-len(bad)} failed={len(bad)}")
+        # if not bad.empty:
+        #     print(bad.sort_values('theta_eV').to_string(index=False))
 
     print(f"\n[PPC] ✅ All SRIM runs complete ({len(results)} tracks).")
     return results
