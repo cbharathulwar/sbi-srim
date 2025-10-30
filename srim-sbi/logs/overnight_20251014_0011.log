@@ -1,0 +1,927 @@
+/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/src/scripts/train.py:72: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  posterior = torch.load(save_path, map_location="cpu")
+[patch] Applied SRIM Ioniz._read_ion() parser fix (handles text or path).
+[patch] Applied SRIM parser fix to all SRIM output classes.
+[INIT] SRIM–SBI pipeline started @ 2025-10-14 00:11:36
+
+[STEP 1] Preprocessing SRIM CSV data ...
+[INFO] Preprocessed 45000 tracks successfully.
+[INFO] target_tracks_per_energy = 3, chunk_size = 2000
+[INFO] Tracks per energy:
+energy_keV
+1000.0       5000
+3000.0       5000
+10000.0      5000
+30000.0      5000
+100000.0     5000
+800000.0     5000
+1200000.0    5000
+1600000.0    5000
+2000000.0    5000
+dtype: int64
+[INFO] x_obs shape: torch.Size([45000, 3]), theta shape: torch.Size([45000, 1])
+[INFO] 45000 unique (ion, energy) tracks summarized.
+[INFO] Saved summary → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/srim_summary_preprocessed.csv
+[DEBUG] ---- Energy Distribution ----
+ion   energy_keV
+0     1000.0        1
+      3000.0        1
+      10000.0       1
+      30000.0       1
+      100000.0      1
+                   ..
+4999  100000.0      1
+      800000.0      1
+      1200000.0     1
+      1600000.0     1
+      2000000.0     1
+Length: 45000, dtype: int64
+[DEBUG] Total tracks: 45000
+----------------------------------------------------
+[STEP 2] ✅ Loaded existing posterior from /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/trained_posterior.pt
+
+[STEP 3] Selecting test tracks & running SRIM ...
+[INFO] Selected 27 test tracks (9 unique energies).
+[DEBUG] Tracks per energy:
+energy_int
+1000       3
+3000       3
+10000      3
+30000      3
+100000     3
+800000     3
+1200000    3
+1600000    3
+2000000    3
+dtype: int64
+[INFO] Selected 27 tracks (3 per energy level).
+[DEBUG] Energies represented: [1000.0, 3000.0, 10000.0, 30000.0, 100000.0, 800000.0, 1200000.0, 1600000.0, 2000000.0]
+[DEBUG] Sampling posterior (40 samples per track) ...
+  0%|          | 0/40 [00:00<?, ?it/s]81it [00:00, 2186.12it/s]             
+  0%|          | 0/40 [00:00<?, ?it/s]68it [00:00, 19951.92it/s]            
+  0%|          | 0/40 [00:00<?, ?it/s]55it [00:00, 17532.05it/s]            
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 21611.77it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]132it [00:00, 40980.62it/s]           
+  0%|          | 0/40 [00:00<?, ?it/s]137it [00:00, 42208.00it/s]           
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 23172.95it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 26475.01it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 27231.32it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 28032.11it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 27436.17it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 23418.78it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 23474.49it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 24070.61it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 24122.52it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 22000.02it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 23583.38it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 24108.66it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]138it [00:00, 34822.16it/s]           
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 24213.04it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 25108.08it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 28144.97it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 23347.09it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 26375.12it/s]
+  0%|          | 0/40 [00:00<?, ?it/s]106it [00:00, 33974.95it/s]           
+  0%|          | 0/40 [00:00<?, ?it/s]79it [00:00, 27914.91it/s]            
+  0%|          | 0/40 [00:00<?, ?it/s]129it [00:00, 37728.56it/s]           
+[mvk-info] MoltenVK version 1.3.0, supporting Vulkan version 1.3.313.
+	The following 126 Vulkan extensions are supported:
+	VK_KHR_16bit_storage v1
+	VK_KHR_8bit_storage v1
+	VK_KHR_bind_memory2 v1
+	VK_KHR_buffer_device_address v1
+	VK_KHR_calibrated_timestamps v1
+	VK_KHR_copy_commands2 v1
+	VK_KHR_create_renderpass2 v1
+	VK_KHR_dedicated_allocation v3
+	VK_KHR_deferred_host_operations v4
+	VK_KHR_depth_stencil_resolve v1
+	VK_KHR_descriptor_update_template v1
+	VK_KHR_device_group v4
+	VK_KHR_device_group_creation v1
+	VK_KHR_driver_properties v1
+	VK_KHR_dynamic_rendering v1
+	VK_KHR_external_fence v1
+	VK_KHR_external_fence_capabilities v1
+	VK_KHR_external_memory v1
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_external_semaphore v1
+	VK_KHR_external_semaphore_capabilities v1
+	VK_KHR_fragment_shader_barycentric v1
+	VK_KHR_format_feature_flags2 v2
+	VK_KHR_get_memory_requirements2 v1
+	VK_KHR_get_physical_device_properties2 v2
+	VK_KHR_get_surface_capabilities2 v1
+	VK_KHR_imageless_framebuffer v1
+	VK_KHR_image_format_list v1
+	VK_KHR_incremental_present v2
+	VK_KHR_index_type_uint8 v1
+	VK_KHR_load_store_op_none v1
+	VK_KHR_maintenance1 v2
+	VK_KHR_maintenance2 v1
+	VK_KHR_maintenance3 v1
+	VK_KHR_maintenance4 v2
+	VK_KHR_maintenance6 v1
+	VK_KHR_maintenance7 v1
+	VK_KHR_map_memory2 v1
+	VK_KHR_multiview v1
+	VK_KHR_portability_subset v1
+	VK_KHR_push_descriptor v2
+	VK_KHR_relaxed_block_layout v1
+	VK_KHR_sampler_mirror_clamp_to_edge v3
+	VK_KHR_sampler_ycbcr_conversion v14
+	VK_KHR_separate_depth_stencil_layouts v1
+	VK_KHR_shader_draw_parameters v1
+	VK_KHR_shader_expect_assume v1
+	VK_KHR_shader_float_controls v4
+	VK_KHR_shader_float16_int8 v1
+	VK_KHR_shader_integer_dot_product v1
+	VK_KHR_shader_non_semantic_info v1
+	VK_KHR_shader_subgroup_extended_types v1
+	VK_KHR_shader_subgroup_rotate v2
+	VK_KHR_shader_terminate_invocation v1
+	VK_KHR_spirv_1_4 v1
+	VK_KHR_storage_buffer_storage_class v1
+	VK_KHR_surface v25
+	VK_KHR_swapchain v70
+	VK_KHR_swapchain_mutable_format v1
+	VK_KHR_synchronization2 v1
+	VK_KHR_timeline_semaphore v2
+	VK_KHR_uniform_buffer_standard_layout v1
+	VK_KHR_variable_pointers v1
+	VK_KHR_vertex_attribute_divisor v1
+	VK_KHR_vulkan_memory_model v3
+	VK_KHR_zero_initialize_workgroup_memory v1
+	VK_EXT_4444_formats v1
+	VK_EXT_buffer_device_address v2
+	VK_EXT_calibrated_timestamps v2
+	VK_EXT_debug_marker v4
+	VK_EXT_debug_report v10
+	VK_EXT_debug_utils v2
+	VK_EXT_descriptor_indexing v2
+	VK_EXT_depth_clip_control v1
+	VK_EXT_extended_dynamic_state v1
+	VK_EXT_extended_dynamic_state2 v1
+	VK_EXT_extended_dynamic_state3 v2
+	VK_EXT_external_memory_host v1
+	VK_EXT_external_memory_metal v1
+	VK_EXT_fragment_shader_interlock v1
+	VK_EXT_hdr_metadata v3
+	VK_EXT_headless_surface v1
+	VK_EXT_host_image_copy v1
+	VK_EXT_host_query_reset v1
+	VK_EXT_image_2d_view_of_3d v1
+	VK_EXT_image_robustness v1
+	VK_EXT_index_type_uint8 v1
+	VK_EXT_inline_uniform_block v1
+	VK_EXT_layer_settings v2
+	VK_EXT_load_store_op_none v1
+	VK_EXT_memory_budget v1
+	VK_EXT_metal_objects v2
+	VK_EXT_metal_surface v1
+	VK_EXT_pipeline_creation_cache_control v3
+	VK_EXT_pipeline_creation_feedback v1
+	VK_EXT_pipeline_robustness v1
+	VK_EXT_post_depth_coverage v1
+	VK_EXT_private_data v1
+	VK_EXT_robustness2 v1
+	VK_EXT_sample_locations v1
+	VK_EXT_scalar_block_layout v1
+	VK_EXT_separate_stencil_usage v1
+	VK_EXT_shader_atomic_float v1
+	VK_EXT_shader_demote_to_helper_invocation v1
+	VK_EXT_shader_stencil_export v1
+	VK_EXT_shader_subgroup_ballot v1
+	VK_EXT_shader_subgroup_vote v1
+	VK_EXT_shader_viewport_index_layer v1
+	VK_EXT_subgroup_size_control v2
+	VK_EXT_surface_maintenance1 v1
+	VK_EXT_swapchain_colorspace v5
+	VK_EXT_swapchain_maintenance1 v1
+	VK_EXT_texel_buffer_alignment v1
+	VK_EXT_texture_compression_astc_hdr v1
+	VK_EXT_tooling_info v1
+	VK_EXT_vertex_attribute_divisor v3
+	VK_AMD_gpu_shader_half_float v2
+	VK_AMD_negative_viewport_height v1
+	VK_AMD_shader_image_load_store_lod v1
+	VK_AMD_shader_trinary_minmax v1
+	VK_IMG_format_pvrtc v1
+	VK_INTEL_shader_integer_functions2 v1
+	VK_GOOGLE_display_timing v1
+	VK_MVK_macos_surface v3
+	VK_MVK_moltenvk v37
+	VK_NV_fragment_shader_barycentric v1
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68d40 (vid 0000, pid 0000): not a joystick or gamepad
+[mvk-info] GPU device:
+	model: Apple M4 Pro
+	type: Integrated
+	vendorID: 0x106b
+	deviceID: 0x1a000209
+	pipelineCacheUUID: 49B97F26-1A00-0209-0000-000100000000
+	GPU memory available: 18186 MB
+	GPU memory used: 0 MB
+	Metal Shading Language 3.1
+	supports the following GPU Features:
+		GPU Family Metal 3
+		GPU Family Apple 9
+		GPU Family Mac 2
+		Read-Write Texture Tier 2
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68920 (vid 0000, pid 0000): not a joystick or gamepad
+[mvk-info] Created VkInstance for Vulkan version 1.0.0, as requested by app, with the following 2 Vulkan extensions enabled:
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_get_physical_device_properties2 v2
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f699c0 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68500 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f695a0 (vid 05ac, pid 8104): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f69390 (vid 05ac, pid 8104): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68ea0 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f697b0 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68a80 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f69bd0 (vid 05ac, pid 8104): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68660 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7a0f051d0 (vid 05ac, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f69000 (vid 05ac, pid 8104): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f68be0 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7a0f05540 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f687c0 (vid 0000, pid 0000): not a joystick or gamepad
+00d4:err:hid:handle_DeviceMatchingCallback Ignoring HID device 0x7fb7c0f683a0 (vid 0000, pid 0000): not a joystick or gamepad
+0024:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0024:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0024:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0118:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0118:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0120:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0120:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0128:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0128:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0130:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0130:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0138:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0138:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0140:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0140:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0148:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0148:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0150:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0150:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0158:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0158:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0160:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0160:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+
+[INFO] Running SRIM for 27 tracks × 40 θ samples ...
+[PPC] Running SRIM serially for 27 tracks ...
+
+[PPC] === Running SRIM for Track ID 1501_1000keV_0001 (Index 0) ===
+[WARN] Ion value '1501' looks numeric — forcing to default 'C'
+[DEBUG multi_track] track=1501_1000keV_0001 | E_true_keV=1000.0 | n_theta=40 | first5=[1045.26, 1049.16, 1055.14, 1066.45, 1093.06]
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1045.26 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1045.26 (rounded=1045) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1045
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1045.26 (rounded → 1045)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1045
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1045
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1049.16 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1049.16 (rounded=1049) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1049
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1049.16 (rounded → 1049)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1049
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1049
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1055.14 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1055.14 (rounded=1055) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1055
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1055.14 (rounded → 1055)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1055
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1055
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1066.45 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1066.45 (rounded=1066) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1066
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1066.45 (rounded → 1066)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1066
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1066
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1093.06 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1093.06 (rounded=1093) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1093
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1093.06 (rounded → 1093)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1093
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1093
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1179.61 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1179.61 (rounded=1180) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1180
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1179.61 (rounded → 1180)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1180
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1180
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1197.44 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1197.44 (rounded=1197) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1197
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1197.44 (rounded → 1197)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1197
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1197
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1197.62 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1197.62 (rounded=1198) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1198
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1197.62 (rounded → 1198)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1198
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1198
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1253.31 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1253.31 (rounded=1253) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1253
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1253.31 (rounded → 1253)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1253
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1253
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1299.61 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1299.61 (rounded=1300) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1300
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1299.61 (rounded → 1300)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1300
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1300
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1314.06 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1314.06 (rounded=1314) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1314
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1314.06 (rounded → 1314)
+   out_dir    = /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1314
+[DEBUG: run_srim_multi_track] ✅ SRIM output → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1314
+[DEBUG: run_srim_multi_track] → Track 1501_1000keV_0001, running SRIM at θ=1319.69 eV
+[DEBUG run_srim_for_theta] ion=C | θ_eV=1319.69 (rounded=1320) | out_dir=/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs_Final/track_C_1000keV_0001/srim_runs/theta_1320
+[DEBUG: run_srim_for_theta] Called with:
+   ion_symbol = C
+   theta_eV   = 1319.69 (rounded → 1320)0168:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0168:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0168:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0170:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0170:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0178:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0178:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0180:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0180:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0188:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0188:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0190:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0190:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+0198:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+0198:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+01a0:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+01a8:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01a8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+01b0:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+[mvk-info] MoltenVK version 1.3.0, supporting Vulkan version 1.3.313.
+	The following 126 Vulkan extensions are supported:
+	VK_KHR_16bit_storage v1
+	VK_KHR_8bit_storage v1
+	VK_KHR_bind_memory2 v1
+	VK_KHR_buffer_device_address v1
+	VK_KHR_calibrated_timestamps v1
+	VK_KHR_copy_commands2 v1
+	VK_KHR_create_renderpass2 v1
+	VK_KHR_dedicated_allocation v3
+	VK_KHR_deferred_host_operations v4
+	VK_KHR_depth_stencil_resolve v1
+	VK_KHR_descriptor_update_template v1
+	VK_KHR_device_group v4
+	VK_KHR_device_group_creation v1
+	VK_KHR_driver_properties v1
+	VK_KHR_dynamic_rendering v1
+	VK_KHR_external_fence v1
+	VK_KHR_external_fence_capabilities v1
+	VK_KHR_external_memory v1
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_external_semaphore v1
+	VK_KHR_external_semaphore_capabilities v1
+	VK_KHR_fragment_shader_barycentric v1
+	VK_KHR_format_feature_flags2 v2
+	VK_KHR_get_memory_requirements2 v1
+	VK_KHR_get_physical_device_properties2 v2
+	VK_KHR_get_surface_capabilities2 v1
+	VK_KHR_imageless_framebuffer v1
+	VK_KHR_image_format_list v1
+	VK_KHR_incremental_present v2
+	VK_KHR_index_type_uint8 v1
+	VK_KHR_load_store_op_none v1
+	VK_KHR_maintenance1 v2
+	VK_KHR_maintenance2 v1
+	VK_KHR_maintenance3 v1
+	VK_KHR_maintenance4 v2
+	VK_KHR_maintenance6 v1
+	VK_KHR_maintenance7 v1
+	VK_KHR_map_memory2 v1
+	VK_KHR_multiview v1
+	VK_KHR_portability_subset v1
+	VK_KHR_push_descriptor v2
+	VK_KHR_relaxed_block_layout v1
+	VK_KHR_sampler_mirror_clamp_to_edge v3
+	VK_KHR_sampler_ycbcr_conversion v14
+	VK_KHR_separate_depth_stencil_layouts v1
+	VK_KHR_shader_draw_parameters v1
+	VK_KHR_shader_expect_assume v1
+	VK_KHR_shader_float_controls v4
+	VK_KHR_shader_float16_int8 v1
+	VK_KHR_shader_integer_dot_product v1
+	VK_KHR_shader_non_semantic_info v1
+	VK_KHR_shader_subgroup_extended_types v1
+	VK_KHR_shader_subgroup_rotate v2
+	VK_KHR_shader_terminate_invocation v1
+	VK_KHR_spirv_1_4 v1
+	VK_KHR_storage_buffer_storage_class v1
+	VK_KHR_surface v25
+	VK_KHR_swapchain v70
+	VK_KHR_swapchain_mutable_format v1
+	VK_KHR_synchronization2 v1
+	VK_KHR_timeline_semaphore v2
+	VK_KHR_uniform_buffer_standard_layout v1
+	VK_KHR_variable_pointers v1
+	VK_KHR_vertex_attribute_divisor v1
+	VK_KHR_vulkan_memory_model v3
+	VK_KHR_zero_initialize_workgroup_memory v1
+	VK_EXT_4444_formats v1
+	VK_EXT_buffer_device_address v2
+	VK_EXT_calibrated_timestamps v2
+	VK_EXT_debug_marker v4
+	VK_EXT_debug_report v10
+	VK_EXT_debug_utils v2
+	VK_EXT_descriptor_indexing v2
+	VK_EXT_depth_clip_control v1
+	VK_EXT_extended_dynamic_state v1
+	VK_EXT_extended_dynamic_state2 v1
+	VK_EXT_extended_dynamic_state3 v2
+	VK_EXT_external_memory_host v1
+	VK_EXT_external_memory_metal v1
+	VK_EXT_fragment_shader_interlock v1
+	VK_EXT_hdr_metadata v3
+	VK_EXT_headless_surface v1
+	VK_EXT_host_image_copy v1
+	VK_EXT_host_query_reset v1
+	VK_EXT_image_2d_view_of_3d v1
+	VK_EXT_image_robustness v1
+	VK_EXT_index_type_uint8 v1
+	VK_EXT_inline_uniform_block v1
+	VK_EXT_layer_settings v2
+	VK_EXT_load_store_op_none v1
+	VK_EXT_memory_budget v1
+	VK_EXT_metal_objects v2
+	VK_EXT_metal_surface v1
+	VK_EXT_pipeline_creation_cache_control v3
+	VK_EXT_pipeline_creation_feedback v1
+	VK_EXT_pipeline_robustness v1
+	VK_EXT_post_depth_coverage v1
+	VK_EXT_private_data v1
+	VK_EXT_robustness2 v1
+	VK_EXT_sample_locations v1
+	VK_EXT_scalar_block_layout v1
+	VK_EXT_separate_stencil_usage v1
+	VK_EXT_shader_atomic_float v1
+	VK_EXT_shader_demote_to_helper_invocation v1
+	VK_EXT_shader_stencil_export v1
+	VK_EXT_shader_subgroup_ballot v1
+	VK_EXT_shader_subgroup_vote v1
+	VK_EXT_shader_viewport_index_layer v1
+	VK_EXT_subgroup_size_control v2
+	VK_EXT_surface_maintenance1 v1
+	VK_EXT_swapchain_colorspace v5
+	VK_EXT_swapchain_maintenance1 v1
+	VK_EXT_texel_buffer_alignment v1
+	VK_EXT_texture_compression_astc_hdr v1
+	VK_EXT_tooling_info v1
+	VK_EXT_vertex_attribute_divisor v3
+	VK_AMD_gpu_shader_half_float v2
+	VK_AMD_negative_viewport_height v1
+	VK_AMD_shader_image_load_store_lod v1
+	VK_AMD_shader_trinary_minmax v1
+	VK_IMG_format_pvrtc v1
+	VK_INTEL_shader_integer_functions2 v1
+	VK_GOOGLE_display_timing v1
+	VK_MVK_macos_surface v3
+	VK_MVK_moltenvk v37
+	VK_NV_fragment_shader_barycentric v1
+[mvk-info] GPU device:
+	model: Apple M4 Pro
+	type: Integrated
+	vendorID: 0x106b
+	deviceID: 0x1a000209
+	pipelineCacheUUID: 49B97F26-1A00-0209-0000-000100000000
+	GPU memory available: 18186 MB
+	GPU memory used: 0 MB
+	Metal Shading Language 3.1
+	supports the following GPU Features:
+		GPU Family Metal 3
+		GPU Family Apple 9
+		GPU Family Mac 2
+		Read-Write Texture Tier 2
+[mvk-info] Created VkInstance for Vulkan version 1.0.0, as requested by app, with the following 2 Vulkan extensions enabled:
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_get_physical_device_properties2 v2
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+01b8:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+[mvk-info] MoltenVK version 1.3.0, supporting Vulkan version 1.3.313.
+	The following 126 Vulkan extensions are supported:
+	VK_KHR_16bit_storage v1
+	VK_KHR_8bit_storage v1
+	VK_KHR_bind_memory2 v1
+	VK_KHR_buffer_device_address v1
+	VK_KHR_calibrated_timestamps v1
+	VK_KHR_copy_commands2 v1
+	VK_KHR_create_renderpass2 v1
+	VK_KHR_dedicated_allocation v3
+	VK_KHR_deferred_host_operations v4
+	VK_KHR_depth_stencil_resolve v1
+	VK_KHR_descriptor_update_template v1
+	VK_KHR_device_group v4
+	VK_KHR_device_group_creation v1
+	VK_KHR_driver_properties v1
+	VK_KHR_dynamic_rendering v1
+	VK_KHR_external_fence v1
+	VK_KHR_external_fence_capabilities v1
+	VK_KHR_external_memory v1
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_external_semaphore v1
+	VK_KHR_external_semaphore_capabilities v1
+	VK_KHR_fragment_shader_barycentric v1
+	VK_KHR_format_feature_flags2 v2
+	VK_KHR_get_memory_requirements2 v1
+	VK_KHR_get_physical_device_properties2 v2
+	VK_KHR_get_surface_capabilities2 v1
+	VK_KHR_imageless_framebuffer v1
+	VK_KHR_image_format_list v1
+	VK_KHR_incremental_present v2
+	VK_KHR_index_type_uint8 v1
+	VK_KHR_load_store_op_none v1
+	VK_KHR_maintenance1 v2
+	VK_KHR_maintenance2 v1
+	VK_KHR_maintenance3 v1
+	VK_KHR_maintenance4 v2
+	VK_KHR_maintenance6 v1
+	VK_KHR_maintenance7 v1
+	VK_KHR_map_memory2 v1
+	VK_KHR_multiview v1
+	VK_KHR_portability_subset v1
+	VK_KHR_push_descriptor v2
+	VK_KHR_relaxed_block_layout v1
+	VK_KHR_sampler_mirror_clamp_to_edge v3
+	VK_KHR_sampler_ycbcr_conversion v14
+	VK_KHR_separate_depth_stencil_layouts v1
+	VK_KHR_shader_draw_parameters v1
+	VK_KHR_shader_expect_assume v1
+	VK_KHR_shader_float_controls v4
+	VK_KHR_shader_float16_int8 v1
+	VK_KHR_shader_integer_dot_product v1
+	VK_KHR_shader_non_semantic_info v1
+	VK_KHR_shader_subgroup_extended_types v1
+	VK_KHR_shader_subgroup_rotate v2
+	VK_KHR_shader_terminate_invocation v1
+	VK_KHR_spirv_1_4 v1
+	VK_KHR_storage_buffer_storage_class v1
+	VK_KHR_surface v25
+	VK_KHR_swapchain v70
+	VK_KHR_swapchain_mutable_format v1
+	VK_KHR_synchronization2 v1
+	VK_KHR_timeline_semaphore v2
+	VK_KHR_uniform_buffer_standard_layout v1
+	VK_KHR_variable_pointers v1
+	VK_KHR_vertex_attribute_divisor v1
+	VK_KHR_vulkan_memory_model v3
+	VK_KHR_zero_initialize_workgroup_memory v1
+	VK_EXT_4444_formats v1
+	VK_EXT_buffer_device_address v2
+	VK_EXT_calibrated_timestamps v2
+	VK_EXT_debug_marker v4
+	VK_EXT_debug_report v10
+	VK_EXT_debug_utils v2
+	VK_EXT_descriptor_indexing v2
+	VK_EXT_depth_clip_control v1
+	VK_EXT_extended_dynamic_state v1
+	VK_EXT_extended_dynamic_state2 v1
+	VK_EXT_extended_dynamic_state3 v2
+	VK_EXT_external_memory_host v1
+	VK_EXT_external_memory_metal v1
+	VK_EXT_fragment_shader_interlock v1
+	VK_EXT_hdr_metadata v3
+	VK_EXT_headless_surface v1
+	VK_EXT_host_image_copy v1
+	VK_EXT_host_query_reset v1
+	VK_EXT_image_2d_view_of_3d v1
+	VK_EXT_image_robustness v1
+	VK_EXT_index_type_uint8 v1
+	VK_EXT_inline_uniform_block v1
+	VK_EXT_layer_settings v2
+	VK_EXT_load_store_op_none v1
+	VK_EXT_memory_budget v1
+	VK_EXT_metal_objects v2
+	VK_EXT_metal_surface v1
+	VK_EXT_pipeline_creation_cache_control v3
+	VK_EXT_pipeline_creation_feedback v1
+	VK_EXT_pipeline_robustness v1
+	VK_EXT_post_depth_coverage v1
+	VK_EXT_private_data v1
+	VK_EXT_robustness2 v1
+	VK_EXT_sample_locations v1
+	VK_EXT_scalar_block_layout v1
+	VK_EXT_separate_stencil_usage v1
+	VK_EXT_shader_atomic_float v1
+	VK_EXT_shader_demote_to_helper_invocation v1
+	VK_EXT_shader_stencil_export v1
+	VK_EXT_shader_subgroup_ballot v1
+	VK_EXT_shader_subgroup_vote v1
+	VK_EXT_shader_viewport_index_layer v1
+	VK_EXT_subgroup_size_control v2
+	VK_EXT_surface_maintenance1 v1
+	VK_EXT_swapchain_colorspace v5
+	VK_EXT_swapchain_maintenance1 v1
+	VK_EXT_texel_buffer_alignment v1
+	VK_EXT_texture_compression_astc_hdr v1
+	VK_EXT_tooling_info v1
+	VK_EXT_vertex_attribute_divisor v3
+	VK_AMD_gpu_shader_half_float v2
+	VK_AMD_negative_viewport_height v1
+	VK_AMD_shader_image_load_store_lod v1
+	VK_AMD_shader_trinary_minmax v1
+	VK_IMG_format_pvrtc v1
+	VK_INTEL_shader_integer_functions2 v1
+	VK_GOOGLE_display_timing v1
+	VK_MVK_macos_surface v3
+	VK_MVK_moltenvk v37
+	VK_NV_fragment_shader_barycentric v1
+[mvk-info] GPU device:
+	model: Apple M4 Pro
+	type: Integrated
+	vendorID: 0x106b
+	deviceID: 0x1a000209
+	pipelineCacheUUID: 49B97F26-1A00-0209-0000-000100000000
+	GPU memory available: 18186 MB
+	GPU memory used: 0 MB
+	Metal Shading Language 3.1
+	supports the following GPU Features:
+		GPU Family Metal 3
+		GPU Family Apple 9
+		GPU Family Mac 2
+		Read-Write Texture Tier 2
+[mvk-info] Created VkInstance for Vulkan version 1.0.0, as requested by app, with the following 2 Vulkan extensions enabled:
+	VK_KHR_external_memory_capabilities v1
+	VK_KHR_get_physical_device_properties2 v2
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01b8:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:err:environ:init_peb starting L"Z:\\Users\\cbharathulwar\\Documents\\Research\\Walsworth\\SRIM-2013\\TRIM.exe" in experimental wow64 mode
+/opt/homebrew/Caskroom/miniconda/base/envs/sbi/lib/python3.12/multiprocessing/resource_tracker.py:279: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+01c0:fixme:olepicture:OLEPictureImpl_SaveAsFile (011F84F0)->(011FA2A0, 0, 00000000), hacked stub.
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}
+01c0:fixme:olepicture:OLEPictureImpl_FindConnectionPoint no connection point for {33ad4ed2-6699-11cf-b70c-00aa0060d393}

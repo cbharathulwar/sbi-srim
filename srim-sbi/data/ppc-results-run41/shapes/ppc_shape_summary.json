@@ -1,0 +1,14 @@
+[
+  {
+    "n_tracks_ok": 9,
+    "mean_emd": 0.03677805978534549,
+    "std_emd": 0.030442214718145694,
+    "mean_cosine": 0.9850104776187764,
+    "std_cosine": 0.021284034602657882,
+    "mean_pct_diff": 136.61305766664282,
+    "std_pct_diff": 214.44151776151406,
+    "mean_z": NaN,
+    "std_z": NaN,
+    "frac_outliers_z>2": 0.0
+  }
+]

@@ -180,4 +180,3 @@ def clean_summary_data(df: pd.DataFrame) -> pd.DataFrame:
 
 import numpy as np
 import pandas as pd
-

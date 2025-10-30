@@ -1,0 +1,27 @@
+[
+  {
+    "feature":"mean_depth_A",
+    "n_tracks_ok":18,
+    "mean_delta_pct":-34.3602538864,
+    "median_delta_pct":-79.722296083,
+    "median_abs_z":1.7788597752,
+    "std_z":4.4746519116,
+    "frac_outliers":0.4444444444
+  },
+  {
+    "feature":"max_depth_A",
+    "n_tracks_ok":18,
+    "mean_delta_pct":-69.8713851852,
+    "median_delta_pct":-89.42,
+    "frac_outliers":0.0
+  },
+  {
+    "feature":"vacancies_per_ion",
+    "n_tracks_ok":18,
+    "mean_delta_pct":-47.9144205877,
+    "median_delta_pct":-55.6336496781,
+    "median_abs_z":4.5147608084,
+    "std_z":13.8970777724,
+    "frac_outliers":0.5555555556
+  }
+]

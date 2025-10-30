@@ -22,7 +22,7 @@ from src.utils.data_utils import tensor_to_observed_dict
 
 BASE_DIR = Path("/Users/cbharathulwar/Documents/Research/Walsworth")
 DATA_PATH = BASE_DIR / "Code/SBI/srim-sbi/data/all_vacancies.csv"
-OUTPUT_BASE = '/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs'
+OUTPUT_BASE = "/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Outputs"
 
 # Where to store PPC results
 OUTPUT_DIR_PER_TRACK = BASE_DIR / "Code/SBI/srim-sbi/data/ppc-results/per-track"
@@ -57,7 +57,7 @@ df_clean = clean_summary_data(df_summary_full)  # Keep only necessary columns
 print(f"[INFO] Cleaned SRIM summary shape: {df_clean.shape}")
 
 print("[DEBUG] Selected x_test_ids:", x_test_ids)
-print("[DEBUG] SRIM df_clean track_ids:", sorted(df_clean['track_id'].unique())[:15])
+print("[DEBUG] SRIM df_clean track_ids:", sorted(df_clean["track_id"].unique())[:15])
 # Verify track_id consistency
 available_tracks = sorted(df_clean["track_id"].unique())
 print(f"[INFO] Available track_ids in SRIM summary: {available_tracks}")
@@ -80,7 +80,7 @@ metrics_per_track = plot_ppc_histograms_per_track(
     output_dir=str(OUTPUT_DIR_PER_TRACK),
     bins=40,
     save_plots=True,
-    return_metrics=True
+    return_metrics=True,
 )
 
 # ------------------------------------------------------
@@ -94,7 +94,7 @@ metrics_global = plot_ppc_histograms(
     output_dir=str(OUTPUT_DIR_GLOBAL),
     bins=40,
     save_plots=True,
-    return_metrics=True
+    return_metrics=True,
 )
 
 # ------------------------------------------------------
@@ -114,5 +114,3 @@ pd.Series(manifest).to_json(manifest_path)
 print(f"[INFO] Saved PPC manifest → {manifest_path}")
 
 print("\n✅ PPC pipeline completed successfully.")
-
-

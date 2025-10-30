@@ -1,0 +1,29 @@
+[
+  {
+    "feature": "mean_depth_A",
+    "n_tracks_ok": 0,
+    "mean_delta_pct": NaN,
+    "median_delta_pct": NaN,
+    "median_abs_z": NaN,
+    "std_z": NaN,
+    "frac_outliers": NaN
+  },
+  {
+    "feature": "max_depth_A",
+    "n_tracks_ok": 0,
+    "mean_delta_pct": NaN,
+    "median_delta_pct": NaN,
+    "median_abs_z": NaN,
+    "std_z": NaN,
+    "frac_outliers": NaN
+  },
+  {
+    "feature": "vacancies_per_ion",
+    "n_tracks_ok": 0,
+    "mean_delta_pct": NaN,
+    "median_delta_pct": NaN,
+    "median_abs_z": NaN,
+    "std_z": NaN,
+    "frac_outliers": NaN
+  }
+]

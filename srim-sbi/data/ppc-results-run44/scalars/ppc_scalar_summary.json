@@ -1,0 +1,29 @@
+[
+  {
+    "feature": "mean_depth_A",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -60.31690430657881,
+    "median_delta_pct": -88.32201873541335,
+    "median_abs_z": 9.532687566183348,
+    "std_z": 11.052034022722012,
+    "frac_outliers": 0.7777777777777778
+  },
+  {
+    "feature": "max_depth_A",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -69.59722222222221,
+    "median_delta_pct": -90.11333333333332,
+    "median_abs_z": NaN,
+    "std_z": NaN,
+    "frac_outliers": 0.0
+  },
+  {
+    "feature": "vacancies_per_ion",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -54.84656952564377,
+    "median_delta_pct": -55.60293836422583,
+    "median_abs_z": 4.603806311698829,
+    "std_z": 2.8381042995316283,
+    "frac_outliers": 0.7777777777777778
+  }
+]

@@ -1,0 +1,29 @@
+[
+  {
+    "feature": "mean_depth_A",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -60.491929054950624,
+    "median_delta_pct": -89.01294705300606,
+    "median_abs_z": 8.266675806982866,
+    "std_z": 8.796269632148974,
+    "frac_outliers": 0.6666666666666666
+  },
+  {
+    "feature": "max_depth_A",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -69.59722222222221,
+    "median_delta_pct": -90.11333333333332,
+    "median_abs_z": NaN,
+    "std_z": NaN,
+    "frac_outliers": 0.0
+  },
+  {
+    "feature": "vacancies_per_ion",
+    "n_tracks_ok": 9,
+    "mean_delta_pct": -56.80705741939787,
+    "median_delta_pct": -56.6894162050769,
+    "median_abs_z": 6.2808370718583575,
+    "std_z": 3.4485492654543606,
+    "frac_outliers": 0.7777777777777778
+  }
+]

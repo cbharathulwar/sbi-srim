@@ -5,8 +5,6 @@ Handles running SRIM simulations for given ion energies (thetas)
 and saving the results to structured output folders.
 """
 
-
-
 import torch
 from pathlib import Path
 import os
@@ -26,82 +24,80 @@ from pathlib import Path
 import io
 import srim.output
 
+
 def _patched_read_ion(self, output):
     """
-    Fix for SRIM 2013 outputs where 'Ion = C' appears.
-    Handles both path and in-memory text cases.
+    Patch for SRIM outputs where 'Ion = X' appears in mixed formats.
+    Works for both file paths and in-memory text.
     """
-    # Case 1: `output` is already file contents (string or bytes)
     if isinstance(output, (str, bytes)):
         text = output.decode() if isinstance(output, bytes) else output
-        stream = io.StringIO(text)
+        f = io.StringIO(text)
     else:
-        # Case 2: `output` is a path (Path or str)
-        stream = open(output, "r")
+        f = open(output, "r")
 
-    with stream as f:
+    with f:
         for line in f:
             if "Ion" in line:
-                # Normalize both "=" and ":" formats
                 parts = line.replace("=", " ").replace(":", " ").split()
                 for token in parts:
-                    if token.isalpha() and len(token) <= 2:  # e.g. C, Si, He
+                    if token.isalpha() and len(token) <= 2:
                         return token
-    raise srim.output.SRIMOutputParseError("unable to extract ion from file")
+    raise srim.output.SRIMOutputParseError("Could not extract ion.")
 
 # Apply once
 srim.output.Ioniz._read_ion = _patched_read_ion
 print("[patch] Applied SRIM Ioniz._read_ion() parser fix (handles text or path).")
 
-import srim.output
 
-import srim.output
+
+
 
 # Patch all known SRIM output parsers that use _read_ion
-for cls_name in [
-    "Ioniz",
-    "Vacancy",
-    "Phonon", "Phonons",   # singular and plural (depends on PySRIM version)
-    "E2RECOIL",
-    "NOVAC",
-    "EnergyToRecoils"
-]:
-    if hasattr(srim.output, cls_name):
-        cls = getattr(srim.output, cls_name)
-        cls._read_ion = _patched_read_ion
-
+# Patch SRIM output readers to use the fixed ion parser
+for name in ["Ioniz", "Vacancy", "Phonon", "Phonons", "E2RECOIL", "NOVAC", "EnergyToRecoils"]:
+    if hasattr(srim.output, name):
+        getattr(srim.output, name)._read_ion = _patched_read_ion
 print("[patch] Applied SRIM parser fix to all SRIM output classes.")
 
 
 # All SRIM output files typically produced by TRIM
 KNOWN_TXT_OUTPUTS = [
-    "TDATA.txt", "RANGE.txt", "VACANCY.txt", "IONIZ.txt",
-    "PHONON.txt", "E2RECOIL.txt", "NOVAC.txt", "LATERAL.txt"
+    "TDATA.txt",
+    "RANGE.txt",
+    "VACANCY.txt",
+    "IONIZ.txt",
+    "PHONON.txt",
+    "E2RECOIL.txt",
+    "NOVAC.txt",
+    "LATERAL.txt",
 ]
 ALSO_COPY = ["TRIM.IN", "TRIMAUTO"]  # metadata and audit files
 
 
-def run_srim_for_theta(theta_eV,
-                       srim_directory,
-                       output_base,
-                       ion_symbol="C",
-                       number_ions=200,
-                       calculation=1,
-                       layer_spec=None,
-                       density_g_cm3=3.51,
-                       width_A=15000.0,
-                       overwrite=False):
+def run_srim_for_theta(
+    theta_eV,
+    srim_directory,
+    output_base,
+    ion_symbol="C",
+    number_ions=200,
+    calculation=1,
+    layer_spec=None,
+    density_g_cm3=3.51,
+    width_A=15000.0,
+    overwrite=False,
+):
     """
-    Run SRIM at a given energy and save results to a unique folder.
+    Run SRIM at a given ion energy and save results to a unique folder.
 
     Parameters
     ----------
     theta_eV : float
-        Ion energy in eV (e.g., 1e3 for 1 keV).
+        Ion energy in eV.
     srim_directory : str | Path
-        Path to the SRIM-2013 directory (where TRIM.exe lives).
+        Path to SRIM installation (where TRIM.exe is located).
     output_base : str | Path
-        Base directory under which a unique folder per theta will be created.
+        Base directory where results are saved.
     ion_symbol : str, default="C"
         Element symbol for the ion.
     number_ions : int, default=200
@@ -109,80 +105,55 @@ def run_srim_for_theta(theta_eV,
     calculation : int, default=1
         TRIM calculation mode (1 = Quick KP).
     layer_spec : dict | None
-        Layer specification; default is pure Carbon.
+        Target layer specification (defaults to pure carbon).
     density_g_cm3 : float, default=3.51
         Target layer density.
     width_A : float, default=15000.0
-        Layer thickness in Å (1.5 μm).
+        Target layer thickness in Å.
     overwrite : bool, default=False
-        If True, overwrite any existing folder for this theta.
+        If True, overwrite existing run folder.
 
     Returns
     -------
-    output_dir : str
-        Path to the unique folder containing this run’s outputs.
+    str
+        Path to the folder containing this run’s outputs.
     """
     srim_dir = Path(srim_directory)
     out_base = Path(output_base)
 
-    # --- Compute once ---
     theta_eV = float(theta_eV)
     theta_int = int(round(theta_eV))
     theta_tag = f"theta_{theta_int}"
     out_dir = out_base / theta_tag
 
-    # --- DEBUG: trace SRIM call ---
-    print(
-        f"[DEBUG run_srim_for_theta] ion={ion_symbol} | "
-        f"θ_eV={theta_eV} (rounded={theta_int}) | out_dir={out_dir}"
-    )
-
-    # Optional overwrite
     if out_dir.exists() and overwrite:
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean old SRIM outputs
+    # Clean up old SRIM output files
     for name in KNOWN_TXT_OUTPUTS + ALSO_COPY:
-        p = srim_dir / name
-        if p.exists():
-            p.unlink()
+        path = srim_dir / name
+        if path.exists():
+            path.unlink()
 
-    # Default target layer (pure carbon)
+    # Default pure carbon layer
     if layer_spec is None:
-        layer_spec = {
-            'C': {'stoich': 1.0, 'E_d': 30.0, 'lattice': 0.0, 'surface': 3.0}
-        }
+        layer_spec = {"C": {"stoich": 1.0, "E_d": 30.0, "lattice": 0.0, "surface": 3.0}}
 
-    # Build SRIM simulation components
-
-    # --- ensure element symbol is string ---
-    if not isinstance(ion_symbol, str):
-      ion_symbol = str(ion_symbol)
-
-
-# --- DEBUG CHECKPOINT ---------------------------------------------
-    print(f"[DEBUG: run_srim_for_theta] Called with:")
-    print(f"   ion_symbol = {ion_symbol}")
-    print(f"   theta_eV   = {theta_eV} (rounded → {int(round(float(theta_eV)))})")
-    print(f"   out_dir    = {out_dir}")
-    # sanity check folder name
-    if '.0keV' in str(out_dir):
-        print(f"⚠️  [WARN] Non-integer folder name detected → {out_dir}")
-    # ---------------------------------------------------------------
-    # Safety: handle numeric element codes accidentally passed in
+    # Allow numeric atomic numbers (e.g., 6 → C)
     ELEMENT_MAP = {"6": "C", "14": "Si", "13": "Al", "8": "O", "1": "H", "79": "Au"}
     if str(ion_symbol).isdigit():
         ion_symbol = ELEMENT_MAP.get(str(ion_symbol), "C")
-    ion = Ion(ion_symbol, energy=float(theta_eV))
+
+    ion = Ion(ion_symbol, energy=theta_eV)
     layer = Layer(layer_spec, density=density_g_cm3, width=width_A)
     target = Target([layer])
 
-    # Run TRIM simulation
+    # Run TRIM
     trim = TRIM(target, ion, number_ions=number_ions, calculation=calculation)
     trim.run(str(srim_dir))
 
-    # Copy outputs to unique directory
+    # Copy SRIM outputs
     copied = []
     for name in KNOWN_TXT_OUTPUTS + ALSO_COPY:
         src = srim_dir / name
@@ -190,49 +161,38 @@ def run_srim_for_theta(theta_eV,
             shutil.copy2(src, out_dir / name)
             copied.append(name)
 
-    # Sanity check
     if "TDATA.txt" not in copied:
         raise RuntimeError(
-            f"SRIM run at {theta_eV} eV produced no TDATA.txt in {srim_dir}. "
-            f"Copied files: {copied}"
+            f"No TDATA.txt found after SRIM run at {theta_eV} eV. Copied: {copied}"
         )
 
     return str(out_dir)
 
 
-from pathlib import Path
-import pandas as pd
-from datetime import datetime
 
-def run_srim_batch(
-    thetas_eV,
-    srim_directory,
-    output_base,
-    overwrite=False,
-    **kwargs
-):
+def run_srim_batch(thetas_eV, srim_directory, output_base, overwrite=False, **kwargs):
     """
-    Run SRIM for multiple energies (thetas) and save outputs in separate folders.
+    Run SRIM for a list of energies and save each run in its own folder.
 
     Parameters
     ----------
     thetas_eV : list[float]
-        List of ion energies in eV.
+        Ion energies in eV.
     srim_directory : str | Path
-        Path to SRIM installation directory (where TRIM.exe lives).
+        Path to SRIM installation.
     output_base : str | Path
-        Output directory where per-theta results will be stored.
+        Directory where all runs are saved.
     overwrite : bool, default=False
-        If True, clears existing subfolders before rerunning.
+        If True, reruns and replaces existing folders.
     kwargs :
-        Extra args passed to run_srim_for_theta().
+        Extra options passed to run_srim_for_theta().
 
     Returns
     -------
-    results_df : pd.DataFrame
-        DataFrame with columns [theta_eV, output_folder, status, timestamp].
+    pd.DataFrame
+        Summary of each run with columns:
+        [theta_eV, output_folder, status, timestamp].
     """
-
     srim_dir = Path(srim_directory)
     out_base = Path(output_base)
     out_base.mkdir(parents=True, exist_ok=True)
@@ -240,39 +200,45 @@ def run_srim_batch(
     results = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    print(f"[SRIM-BATCH] Starting batch of {len(thetas_eV)} energies → {out_base}")
+    print(f"[INFO] Running SRIM batch for {len(thetas_eV)} energies → {out_base}")
 
     for theta in sorted(thetas_eV):
         try:
-            print(f"[SRIM] Running θ = {theta:.2f} eV ...")
             folder = run_srim_for_theta(
                 theta_eV=theta,
                 srim_directory=srim_dir,
                 output_base=out_base,
                 overwrite=overwrite,
-                **kwargs
+                **kwargs,
             )
-            print(f"[SRIM] ✅ Saved outputs → {folder}")
             results.append((theta, str(folder), "OK", timestamp))
         except Exception as e:
-            print(f"[SRIM] ❌ Failed for θ={theta:.2f} eV → {e}")
+            print(f"[WARN] SRIM failed at {theta:.2f} eV: {e}")
             results.append((theta, None, f"ERROR: {e}", timestamp))
-            continue
 
-    results_df = pd.DataFrame(results, columns=["theta_eV", "output_folder", "status", "timestamp"])
+    results_df = pd.DataFrame(
+        results, columns=["theta_eV", "output_folder", "status", "timestamp"]
+    )
 
-    # optional — save manifest to disk for traceability
-    manifest_path = out_base / f"srim_batch_manifest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    manifest_path = out_base / f"srim_batch_manifest_{datetime.now():%Y%m%d_%H%M%S}.csv"
     results_df.to_csv(manifest_path, index=False)
-    print(f"[SRIM-BATCH] Manifest saved → {manifest_path}")
+    print(f"[INFO] Batch manifest saved → {manifest_path}")
 
     return results_df
+
+import re
+import json
+import torch
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from datetime import datetime
 
 def run_srim_multi_track(
     samples_dict,
     x_test,
     track_ids,
-    srim_directory,      # shared path where TRIM.exe lives
+    srim_directory,
     output_base,
     ion_symbol="C",
     number_ions=200,
@@ -280,37 +246,38 @@ def run_srim_multi_track(
     density_g_cm3=3.51,
     width_A=15000.0,
     overwrite=False,
-    df_summary=None,     # dataframe mapping track_id → ion, energy_keV
-    n_jobs=None          # (not used)
+    df_summary=None,
+    bin_edges_path=None,
+    n_jobs=None,
 ):
     """
-    Run SRIM for multiple test tracks, one at a time, using a shared SRIM installation.
-    Each track corresponds to one observed x_test entry and a posterior θ sample set.
-    Creates a clean structure like:
-        track_<ion>_<energy>keV_<id>/
+    Run SRIM for multiple test tracks, one at a time.
+    Each track corresponds to one observed x_test entry and a set of posterior θ samples.
+
+    Folder structure:
+        track_<ion>_<energy>keV_<ion####>/
             metadata.json
+            posterior_samples.csv
             srim_runs/theta_<val>eV/
     """
+    from src.utils.srim_utils import run_srim_for_theta  # avoid circular imports
 
     output_base = Path(output_base)
     output_base.mkdir(parents=True, exist_ok=True)
 
     if len(track_ids) != len(x_test):
-        raise ValueError("track_ids must match x_test length")
+        raise ValueError("track_ids and x_test must have the same length.")
 
-    print(f"[PPC] Running SRIM serially for {len(track_ids)} tracks ...")
+    print(f"[INFO] Running SRIM for {len(track_ids)} tracks...")
 
     results = []
 
     for i, (x, track_id) in enumerate(zip(x_test.itertuples(index=False), track_ids)):
         track_id = str(track_id)
-        print(f"\n[PPC] === Running SRIM for Track ID {track_id} (Index {i}) ===")
+        print(f"[INFO] Track {i+1}/{len(track_ids)}: {track_id}")
 
-        # ---------------------------------------------------------------
-        # 1️⃣ Retrieve ion and energy info from df_summary
-        # ---------------------------------------------------------------
+        # --- Retrieve ion and energy info ---
         ion, energy_keV, composite_key = ion_symbol, None, None
-
         if df_summary is not None and "track_id" in df_summary.columns:
             row = df_summary[df_summary["track_id"] == track_id]
             if not row.empty:
@@ -319,62 +286,56 @@ def run_srim_multi_track(
                 energy_keV = row.get("energy_keV", None)
                 composite_key = row.get("composite_key", f"{ion}_{energy_keV}keV")
 
-        # ---------------------------------------------------------------
-        # 🧩 FIX: ensure ion is a valid element symbol, not a number
-        # ---------------------------------------------------------------
-        try:
-            float(ion)
-            print(f"[WARN] Ion value '{ion}' looks numeric — forcing to default '{ion_symbol}'")
+        # Guard against numeric ion labels
+        if str(ion).isdigit():
             ion = ion_symbol
-        except Exception:
-            pass
 
-        # ---------------------------------------------------------------
-        # 2️⃣ Track folder naming — readable & deterministic
-        # ---------------------------------------------------------------
-        if energy_keV is None:
-            energy_keV = 0.0
-        energy_int = int(round(float(energy_keV)))
-        folder_name = f"track_{ion}_{energy_int}keV_{track_id.split('_')[-1]}"
-
-        track_dir = output_base / folder_name
+        energy_int = int(round(float(energy_keV or 0)))
+        suffix = re.search(r"(ion\d+)", track_id.lower())
+        suffix = suffix.group(1) if suffix else re.sub(r"[^a-zA-Z0-9]+", "", track_id)[-8:]
+        track_dir = Path(output_base) / f"track_{ion}_{energy_int}keV_{suffix}"
         srim_runs_dir = track_dir / "srim_runs"
         srim_runs_dir.mkdir(parents=True, exist_ok=True)
 
-        # ---------------------------------------------------------------
-        # 3️⃣ Extract posterior θ samples
-        # ---------------------------------------------------------------
+        # --- Retrieve posterior θ samples (in keV) ---
         if track_id not in samples_dict:
-            raise KeyError(f"Track ID {track_id} not found in samples_dict")
+            raise KeyError(f"Track ID {track_id} not in samples_dict")
 
-        theta_samples = samples_dict[track_id]
-        if isinstance(theta_samples, torch.Tensor):
-            theta_samples = theta_samples.detach().cpu().numpy().flatten().tolist()
-        elif isinstance(theta_samples, np.ndarray):
-            theta_samples = theta_samples.flatten().tolist()
+        theta_samples_keV = samples_dict[track_id]
+        if isinstance(theta_samples_keV, torch.Tensor):
+            theta_samples_keV = theta_samples_keV.cpu().numpy().flatten().tolist()
+        elif isinstance(theta_samples_keV, np.ndarray):
+            theta_samples_keV = theta_samples_keV.flatten().tolist()
         else:
-            theta_samples = list(theta_samples)
+            theta_samples_keV = list(theta_samples_keV)
 
-        theta_samples = sorted(set(round(float(t), 2) for t in theta_samples))
+        theta_samples_keV = sorted(set(round(float(t), 2) for t in theta_samples_keV))
 
-        # Save the posterior sample list
-        pd.DataFrame({"theta_eV": theta_samples}).to_csv(track_dir / "posterior_samples.csv", index=False)
+        # --- Convert keV → eV for SRIM ---
+        theta_samples_eV = [float(t) * 1_000.0 for t in theta_samples_keV]
 
-        # ---------------------------------------------------------------
-        # 4️⃣ Prepare x_test row
-        # ---------------------------------------------------------------
+        # Sanity checks to prevent silent unit bugs
+        for val_keV, val_eV in zip(theta_samples_keV, theta_samples_eV):
+            assert 1 <= val_keV <= 2000, f"Posterior θ {val_keV} keV out of prior range."
+            assert 1_000 <= val_eV <= 2_000_000, f"Converted θ {val_eV} eV out of expected range."
+
+        print(f"[DEBUG] keV→eV conversion: {theta_samples_keV[:3]} → {theta_samples_eV[:3]} ...")
+
+        # Save posterior samples (eV) for traceability
+        pd.DataFrame({"theta_eV": theta_samples_eV}).to_csv(
+            track_dir / "posterior_samples.csv", index=False
+        )
+
+        # --- Prepare metadata ---
         if isinstance(x, torch.Tensor):
-            x_values = x.detach().cpu().numpy().tolist()
+            x_values = x.cpu().numpy().tolist()
         elif isinstance(x, np.ndarray):
             x_values = x.tolist()
         elif isinstance(x, (pd.Series, dict)):
-            x_values = [x["mean_depth_A"], x["std_depth_A"], x["vacancies_per_ion"]]
+            x_values = list(x.values())
         else:
             x_values = list(x)
 
-        # ---------------------------------------------------------------
-        # 5️⃣ Write metadata.json
-        # ---------------------------------------------------------------
         metadata = {
             "track_index": i,
             "track_id": track_id,
@@ -382,77 +343,46 @@ def run_srim_multi_track(
             "energy_keV": energy_int,
             "composite_key": composite_key,
             "track_folder": str(track_dir),
-            "num_samples": len(theta_samples),
-            "theta_samples_eV": theta_samples,
+            "num_samples": len(theta_samples_keV),
+            "theta_samples_keV": theta_samples_keV,
+            "theta_samples_eV": theta_samples_eV,
             "x_test": x_values,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }
 
-        def _to_json_safe(obj):
+        def _json_safe(obj):
             if isinstance(obj, (np.generic,)):
                 return obj.item()
-            elif isinstance(obj, (torch.Tensor,)):
-                return obj.detach().cpu().tolist()
+            elif isinstance(obj, torch.Tensor):
+                return obj.cpu().tolist()
             elif isinstance(obj, (list, tuple)):
-                return [_to_json_safe(x) for x in obj]
+                return [_json_safe(x) for x in obj]
             elif isinstance(obj, dict):
-                return {k: _to_json_safe(v) for k, v in obj.items()}
-            else:
-                return obj
-
-        metadata_safe = _to_json_safe(metadata)
+                return {k: _json_safe(v) for k, v in obj.items()}
+            return obj
 
         with open(track_dir / "metadata.json", "w") as f:
-            json.dump(metadata_safe, f, indent=2)
+            json.dump(_json_safe(metadata), f, indent=2)
 
-        # ---------------------------------------------------------------
-        # 6️⃣ Run SRIM for each θ sample into srim_runs/
-        # ---------------------------------------------------------------
-        print(
-            f"[DEBUG multi_track] track={track_id} | E_true_keV={energy_keV} | "
-            f"n_theta={len(theta_samples)} | first5={theta_samples[:5]}"
-        )
-
-        for theta_eV in theta_samples:
+        # --- Run SRIM for each θ sample (in eV) ---
+        for theta_eV in theta_samples_eV:
             try:
-                print(f"[DEBUG: run_srim_multi_track] → Track {track_id}, running SRIM at θ={theta_eV} eV")
-                folder = run_srim_for_theta(
+                run_srim_for_theta(
                     theta_eV=theta_eV,
                     srim_directory=srim_directory,
-                    output_base=srim_runs_dir,  # store under srim_runs
+                    output_base=srim_runs_dir,
                     ion_symbol=ion,
                     number_ions=number_ions,
                     calculation=calculation,
                     density_g_cm3=density_g_cm3,
                     width_A=width_A,
-                    overwrite=overwrite
+                    overwrite=overwrite,
                 )
-                print(f"[DEBUG: run_srim_multi_track] ✅ SRIM output → {folder}")
             except Exception as e:
-                print(f"[DEBUG: run_srim_multi_track] ❌ SRIM failed for {track_id} @ θ={theta_eV} eV → {e}")
+                print(f"[WARN] SRIM failed for {track_id} @ {theta_eV} eV: {e}")
 
-        print(f"[PPC] Track {track_id} complete → results in {track_dir}")
         results.append(str(track_dir))
+        print(f"[INFO] Completed {track_id}")
 
-        # ---------------------------------------------------------------
-        # 7️⃣ Batch manifest summary (DISABLED duplicate work)
-        # ---------------------------------------------------------------
-        # manifest = run_srim_batch(
-        #     thetas_eV=theta_samples,
-        #     srim_directory=srim_directory,
-        #     output_base=srim_runs_dir,
-        #     ion_symbol=ion,
-        #     number_ions=number_ions,
-        #     calculation=calculation,
-        #     density_g_cm3=density_g_cm3,
-        #     width_A=width_A,
-        #     overwrite=overwrite,
-        # )
-        #
-        # bad = manifest[manifest["status"] != "OK"]
-        # print(f"[MANIFEST] track={track_id} total={len(manifest)} ok={len(manifest)-len(bad)} failed={len(bad)}")
-        # if not bad.empty:
-        #     print(bad.sort_values('theta_eV').to_string(index=False))
-
-    print(f"\n[PPC] ✅ All SRIM runs complete ({len(results)} tracks).")
+    print(f"[INFO] SRIM finished for all {len(results)} tracks.")
     return results

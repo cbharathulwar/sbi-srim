@@ -1,0 +1,144 @@
+[patch] Applied SRIM Ioniz._read_ion() parser fix (handles text or path).
+[patch] Applied SRIM parser fix to all SRIM output classes.
+[INIT] SRIM–SBI pipeline started @ 2025-10-24 11:55:47
+
+[STEP 1] Preprocessing SRIM CSV data ...
+[INFO] Loaded precomputed bin edges from /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/bin_edges.json
+[INFO] Preprocessed 45000 tracks from 9 energies.
+[INFO] Global relative depth bin edges: [0.0, 0.003, 0.01, 0.032, 0.1, 0.316, 1.0]
+[INFO] x_obs shape: torch.Size([45000, 9]), theta shape: torch.Size([45000, 1])
+[INFO] 45000 unique (ion, energy) tracks summarized.
+[INFO] Saved summary → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/srim_summary_preprocessed.csv
+[DEBUG] ---- Energy Distribution ----
+ion  energy_keV
+C    1000.0        5000
+     3000.0        5000
+     10000.0       5000
+     30000.0       5000
+     100000.0      5000
+     800000.0      5000
+     1200000.0     5000
+     1600000.0     5000
+     2000000.0     5000
+dtype: int64
+[DEBUG] Total tracks: 45000
+----------------------------------------------------
+[STEP 2] Training new SBI posterior ...
+[Training NPE model...]
+ Training neural network. Epochs trained: 1 Training neural network. Epochs trained: 2 Training neural network. Epochs trained: 3 Training neural network. Epochs trained: 4 Training neural network. Epochs trained: 5 Training neural network. Epochs trained: 6 Training neural network. Epochs trained: 7 Training neural network. Epochs trained: 8 Training neural network. Epochs trained: 9 Training neural network. Epochs trained: 10 Training neural network. Epochs trained: 11 Training neural network. Epochs trained: 12 Training neural network. Epochs trained: 13 Training neural network. Epochs trained: 14 Training neural network. Epochs trained: 15 Training neural network. Epochs trained: 16 Training neural network. Epochs trained: 17 Training neural network. Epochs trained: 18 Training neural network. Epochs trained: 19 Training neural network. Epochs trained: 20 Training neural network. Epochs trained: 21 Training neural network. Epochs trained: 22 Training neural network. Epochs trained: 23 Training neural network. Epochs trained: 24 Training neural network. Epochs trained: 25 Training neural network. Epochs trained: 26 Training neural network. Epochs trained: 27 Training neural network. Epochs trained: 28 Training neural network. Epochs trained: 29 Training neural network. Epochs trained: 30 Training neural network. Epochs trained: 31 Training neural network. Epochs trained: 32 Training neural network. Epochs trained: 33 Training neural network. Epochs trained: 34 Training neural network. Epochs trained: 35 Training neural network. Epochs trained: 36 Training neural network. Epochs trained: 37 Training neural network. Epochs trained: 38 Training neural network. Epochs trained: 39 Training neural network. Epochs trained: 40 Training neural network. Epochs trained: 41 Training neural network. Epochs trained: 42 Training neural network. Epochs trained: 43 Training neural network. Epochs trained: 44 Training neural network. Epochs trained: 45 Training neural network. Epochs trained: 46 Training neural network. Epochs trained: 47 Training neural network. Epochs trained: 48 Training neural network. Epochs trained: 49 Training neural network. Epochs trained: 50 Training neural network. Epochs trained: 51 Training neural network. Epochs trained: 52 Training neural network. Epochs trained: 53 Training neural network. Epochs trained: 54 Training neural network. Epochs trained: 55 Training neural network. Epochs trained: 56 Training neural network. Epochs trained: 57 Training neural network. Epochs trained: 58 Training neural network. Epochs trained: 59 Training neural network. Epochs trained: 60 Training neural network. Epochs trained: 61 Training neural network. Epochs trained: 62 Training neural network. Epochs trained: 63 Training neural network. Epochs trained: 64 Training neural network. Epochs trained: 65 Training neural network. Epochs trained: 66 Training neural network. Epochs trained: 67 Training neural network. Epochs trained: 68 Training neural network. Epochs trained: 69 Training neural network. Epochs trained: 70 Training neural network. Epochs trained: 71 Training neural network. Epochs trained: 72 Training neural network. Epochs trained: 73 Training neural network. Epochs trained: 74 Training neural network. Epochs trained: 75 Training neural network. Epochs trained: 76 Training neural network. Epochs trained: 77 Training neural network. Epochs trained: 78 Training neural network. Epochs trained: 79 Training neural network. Epochs trained: 80 Training neural network. Epochs trained: 81 Training neural network. Epochs trained: 82 Training neural network. Epochs trained: 83 Training neural network. Epochs trained: 84 Training neural network. Epochs trained: 85 Training neural network. Epochs trained: 86 Training neural network. Epochs trained: 87 Training neural network. Epochs trained: 88 Training neural network. Epochs trained: 89 Training neural network. Epochs trained: 90 Training neural network. Epochs trained: 91 Training neural network. Epochs trained: 92 Training neural network. Epochs trained: 93 Training neural network. Epochs trained: 94 Training neural network. Epochs trained: 95 Training neural network. Epochs trained: 96 Training neural network. Epochs trained: 97 Training neural network. Epochs trained: 98 Training neural network. Epochs trained: 99 Training neural network. Epochs trained: 100 Training neural network. Epochs trained: 101 Training neural network. Epochs trained: 102 Training neural network. Epochs trained: 103 Training neural network. Epochs trained: 104 Training neural network. Epochs trained: 105 Training neural network. Epochs trained: 106 Training neural network. Epochs trained: 107 Training neural network. Epochs trained: 108 Training neural network. Epochs trained: 109 Training neural network. Epochs trained: 110 Training neural network. Epochs trained: 111 Training neural network. Epochs trained: 112 Training neural network. Epochs trained: 113 Training neural network. Epochs trained: 114 Training neural network. Epochs trained: 115 Training neural network. Epochs trained: 116 Training neural network. Epochs trained: 117 Training neural network. Epochs trained: 118 Training neural network. Epochs trained: 119 Training neural network. Epochs trained: 120 Training neural network. Epochs trained: 121 Training neural network. Epochs trained: 122 Training neural network. Epochs trained: 123 Training neural network. Epochs trained: 124 Training neural network. Epochs trained: 125 Training neural network. Epochs trained: 126 Training neural network. Epochs trained: 127 Training neural network. Epochs trained: 128 Training neural network. Epochs trained: 129 Training neural network. Epochs trained: 130 Training neural network. Epochs trained: 131 Training neural network. Epochs trained: 132 Training neural network. Epochs trained: 133 Training neural network. Epochs trained: 134 Training neural network. Epochs trained: 135 Training neural network. Epochs trained: 136 Training neural network. Epochs trained: 137 Training neural network. Epochs trained: 138 Training neural network. Epochs trained: 139 Training neural network. Epochs trained: 140 Training neural network. Epochs trained: 141 Training neural network. Epochs trained: 142 Training neural network. Epochs trained: 143 Training neural network. Epochs trained: 144 Training neural network. Epochs trained: 145 Training neural network. Epochs trained: 146 Training neural network. Epochs trained: 147 Training neural network. Epochs trained: 148 Training neural network. Epochs trained: 149 Training neural network. Epochs trained: 150 Neural network successfully converged after 150 epochs.[Training complete.]
+[INFO] Posterior saved → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/trained_posterior.pt
+
+[STEP 3] Selecting test tracks & running SRIM ...
+[INFO] Picked 18 test tracks across 9 energies.
+[DEBUG] Tracks per energy:
+energy_int
+1000       2
+3000       2
+10000      2
+30000      2
+100000     2
+800000     2
+1200000    2
+1600000    2
+2000000    2
+dtype: int64
+[INFO] Selected 18 tracks (2 per energy level).
+[DEBUG] Energies represented: [1000.0, 3000.0, 10000.0, 30000.0, 100000.0, 800000.0, 1200000.0, 1600000.0, 2000000.0]
+[INFO] Using features for posterior sampling: ['mean_depth_A', 'max_depth_A', 'vacancies_per_ion', 'rbin_frac_1', 'rbin_frac_2', 'rbin_frac_3', 'rbin_frac_4', 'rbin_frac_5', 'rbin_frac_6']
+[DEBUG] Sampling posterior (20 samples per track) ...
+
+[INFO] Running SRIM for 18 tracks × 20 θ samples ...
+[INFO] Running SRIM for 18 tracks...
+[INFO] Track 1/18: C_1000keV_ion1501
+[DEBUG] keV→eV conversion: [668.18, 765.62, 783.11] → [668180.0, 765620.0, 783110.0] ...
+[INFO] Completed C_1000keV_ion1501
+[INFO] Track 2/18: C_1000keV_ion2586
+[DEBUG] keV→eV conversion: [394.03, 537.48, 553.24] → [394030.0, 537480.0, 553240.0] ...
+[INFO] Completed C_1000keV_ion2586
+[INFO] Track 3/18: C_3000keV_ion1501
+[DEBUG] keV→eV conversion: [1565.09, 1598.28, 1646.06] → [1565090.0, 1598280.0, 1646060.0] ...
+[INFO] Completed C_3000keV_ion1501
+[INFO] Track 4/18: C_3000keV_ion2586
+[DEBUG] keV→eV conversion: [877.44, 955.55, 1479.21] → [877440.0, 955550.0, 1479210.0] ...
+[INFO] Completed C_3000keV_ion2586
+[INFO] Track 5/18: C_10000keV_ion1501
+[DEBUG] keV→eV conversion: [144.01, 476.02, 566.14] → [144010.0, 476020.0, 566140.0] ...
+[INFO] Completed C_10000keV_ion1501
+[INFO] Track 6/18: C_10000keV_ion2586
+[DEBUG] keV→eV conversion: [112.74, 237.52, 281.05] → [112740.0, 237520.0, 281050.0] ...
+[INFO] Completed C_10000keV_ion2586
+[INFO] Track 7/18: C_30000keV_ion1501
+[DEBUG] keV→eV conversion: [123.42, 261.93, 706.51] → [123420.0, 261930.0, 706510.0] ...
+[INFO] Completed C_30000keV_ion1501
+[INFO] Track 8/18: C_30000keV_ion2586
+[DEBUG] keV→eV conversion: [197.57, 218.03, 315.41] → [197570.0, 218030.0, 315410.0] ...
+[INFO] Completed C_30000keV_ion2586
+[INFO] Track 9/18: C_100000keV_ion1501
+[DEBUG] keV→eV conversion: [115.52, 433.01, 433.9] → [115520.0, 433010.0, 433900.0] ...
+[INFO] Completed C_100000keV_ion1501
+[INFO] Track 10/18: C_100000keV_ion2586
+[DEBUG] keV→eV conversion: [208.53, 218.7, 320.34] → [208530.0, 218700.0, 320340.0] ...
+[INFO] Completed C_100000keV_ion2586
+[INFO] Track 11/18: C_800000keV_ion1501
+[DEBUG] keV→eV conversion: [34.54, 97.67, 208.72] → [34540.0, 97670.0, 208720.0] ...
+[INFO] Completed C_800000keV_ion1501
+[INFO] Track 12/18: C_800000keV_ion2586
+[DEBUG] keV→eV conversion: [255.61, 304.58, 656.67] → [255610.0, 304580.0, 656670.0] ...
+[INFO] Completed C_800000keV_ion2586
+[INFO] Track 13/18: C_1200000keV_ion1501
+[DEBUG] keV→eV conversion: [2.6, 25.34, 159.49] → [2600.0, 25340.0, 159490.0] ...
+[INFO] Completed C_1200000keV_ion1501
+[INFO] Track 14/18: C_1200000keV_ion2586
+[DEBUG] keV→eV conversion: [71.81, 142.0, 167.37] → [71810.0, 142000.0, 167370.0] ...
+[INFO] Completed C_1200000keV_ion2586
+[INFO] Track 15/18: C_1600000keV_ion1501
+[DEBUG] keV→eV conversion: [43.0, 50.68, 69.49] → [43000.0, 50680.0, 69490.0] ...
+[INFO] Completed C_1600000keV_ion1501
+[INFO] Track 16/18: C_1600000keV_ion2586
+[DEBUG] keV→eV conversion: [45.2, 46.84, 89.63] → [45200.0, 46840.0, 89630.0] ...
+[INFO] Completed C_1600000keV_ion2586
+[INFO] Track 17/18: C_2000000keV_ion1501
+[DEBUG] keV→eV conversion: [125.73, 133.84, 620.6] → [125730.0, 133840.0, 620600.0] ...
+[INFO] Completed C_2000000keV_ion1501
+[INFO] Track 18/18: C_2000000keV_ion2586
+[DEBUG] keV→eV conversion: [147.04, 210.66, 304.03] → [147040.0, 210660.0, 304030.0] ...
+[INFO] Completed C_2000000keV_ion2586
+[INFO] SRIM finished for all 18 tracks.
+[STEP 3] ✅ SRIM runs complete.
+
+[STEP 4] Summarizing SRIM outputs ...
+[INFO] Summarized 18 tracks, 360 theta runs.
+[INFO] Saved → /Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013/Oct24Run1/srim_summary_20251024_125506.csv
+[INFO] x_check summary saved → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/x_check_summary.csv
+
+[STEP 5] Running Posterior Predictive Check (PPC) ...
+[INFO] Aligned 18 tracks for PPC.
+
+[STEP 5A] Scalar PPC (mean depth + vacancies per ion) ...
+[INFO] Aggregated scalar results for 18 tracks.
+[INFO] Loaded observed scalar values for 18 tracks.
+[INFO] Computed scalar PPC metrics for 54 track-feature pairs.
+[INFO] Summarized scalar PPC across 3 features.
+[INFO] Saved per-track scalar PPC histograms → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/scalars
+[WARN] No valid data for max_depth_A, skipping.
+[INFO] Saved aggregate PPC plots to /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/scalars
+[INFO] Saved scalar PPC per-track results → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/scalars/ppc_scalar_per_track.csv
+[INFO] Saved scalar PPC summary results → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/scalars/ppc_scalar_summary.csv
+[INFO] Saved scalar PPC summary (JSON) → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/scalars/ppc_scalar_summary.json
+
+[STEP 5B] Shape PPC (rbin_frac_* bins) ...
+[INFO] Built simulated vector dictionary for 18 tracks.
+[DEBUG] Example vector length: 6 bins.
+[INFO] Loaded observed shape vectors for 18 tracks.
+[DEBUG] Vector length = 6 bins.
+[INFO] Computed shape PPC metrics for 18 tracks.
+[INFO] Computed shape PPC summary across 18 tracks.
+[INFO] Saved shape PPC distribution plots → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/shapes
+[INFO] Saved shape PPC reports → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/shapes
+[INFO] Saved shape PPC results → /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1/shapes
+
+[DONE] ✅ PPC completed successfully for 18 tracks.
+[INFO] Scalar + shape metrics saved in /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/ppc-results-Oct24Run1
+
+[DONE] ✅ Full pipeline completed in 59.4 min
+[DEBUG] Tracks processed: 18

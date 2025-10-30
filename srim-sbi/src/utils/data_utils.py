@@ -1,253 +1,162 @@
-import pandas as pd
-import numpy as np
-import torch
-from pathlib import Path
+
+
 import os
 import json
-from datetime import datetime
-import matplotlib as plt
-
-from pathlib import Path
-import pandas as pd
-import numpy as np
-import torch
-
-
-import pandas as pd
-import numpy as np
-import torch
-from pathlib import Path
 import hashlib
-
-import pandas as pd
-import numpy as np
-import torch
 from pathlib import Path
+from datetime import datetime
+from typing import Optional
 
-def preprocess(data_path, chunk_size=2000, target_tracks_per_energy=3):
-    """
-    Load SRIM data, group by ion and energy, and create multiple tracks per energy.
-    
-    Parameters
-    ----------
-    data_path : str | Path
-        Path to SRIM CSV data file.
-    chunk_size : int, default=2000
-        Number of ions per track chunk (affects variance within tracks).
-    target_tracks_per_energy : int, default=3
-        Desired number of sub-tracks to extract per (ion, energy) group.
-    """
-    data_path = Path(data_path)
-    df = pd.read_csv(data_path)
-    df.columns = ["x", "y", "z", "ion", "energy"]
 
-    # Convert and clean
-    for c in ["x", "y", "z", "energy"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["x", "y", "z", "energy"]).reset_index(drop=True)
-
-    grouped = df.groupby(["ion", "energy"], sort=True)
-    x_obs, theta, track_ids, ions, energies = [], [], [], [], []
-    grouped_info = {}
-
-    for (ion, energy), group in grouped:
-        n = len(group)
-
-        # --- FIXED CHUNKING LOGIC ---
-        n_chunks = min(target_tracks_per_energy, max(1, n // max(1, chunk_size // target_tracks_per_energy)))
-        # -----------------------------
-
-        grouped_info[f"{ion}_{energy}"] = n_chunks
-
-        for i, sub in enumerate(np.array_split(group, n_chunks)):
-            if sub.empty:
-                continue
-            track = sub[["x", "y", "z"]].values.astype(float)
-            if np.isnan(track).any():
-                continue
-
-            mean_x = np.mean(track[:, 0])
-            std_x = np.std(track[:, 0])
-            num_vac = track.shape[0]
-
-            x_obs.append([mean_x, std_x, num_vac])
-            theta.append([energy])
-            ions.append(ion)
-            energies.append(energy)
-            track_id = f"{ion}_{int(round(energy))}keV_{i+1:04d}"
-            track_ids.append(track_id)
-
-    x_obs = torch.tensor(x_obs, dtype=torch.float32)
-    theta = torch.tensor(theta, dtype=torch.float32)
-    composite_keys = [f"{ion}_{int(energy)}keV" for ion, energy in zip(ions, energies)]
-
-    df_summary = pd.DataFrame({
-        "track_id": track_ids,
-        "ion": ions,
-        "energy_keV": energies,
-        "composite_key": composite_keys,
-        "mean_depth_A": x_obs[:, 0].numpy(),
-        "std_depth_A": x_obs[:, 1].numpy(),
-        "vacancies_per_ion": x_obs[:, 2].numpy()
-    })
-
-    print(f"[INFO] Preprocessed {len(track_ids)} tracks successfully.")
-    print(f"[INFO] target_tracks_per_energy = {target_tracks_per_energy}, chunk_size = {chunk_size}")
-    print(f"[INFO] Tracks per energy:")
-    print(df_summary.groupby("energy_keV").size())
-
-    return x_obs, theta, track_ids, grouped_info, df_summary
-import os
 import numpy as np
 import pandas as pd
+import torch
 import matplotlib.pyplot as plt
 
 
-import pandas as pd
-import numpy as np
+def infer_relative_bin_edges(n_bins=6, r_min=1e-3, r_max=1.0):
+    edges = np.geomspace(r_min, r_max, n_bins) #geomspace functoin returns numbers spaced evenly on a log scale
+    edges = np.insert(edges, 0, 0.0) # you need to start at 0 but cannot with geom space because log 0 is -inf so you add it here (6 bins requires 7 edges)
+    return edges
+
+def relative_bin_fractions_from_events(depths_A, norm_depth_A, r_edges):
+    x = np.asarray(depths_A, float)
+    #make sure nothing funky is going on
+    x = x[np.isfinite(x)]
+    if x.size == 0 or norm_depth_A <= 0:
+        return np.zeros(len(r_edges) - 1, float)
+
+    
+    #add the 1e-12 to avoid the divide by 0 error just in case 
+    r = x / (norm_depth_A + 1e-12) 
+    hist, _ = np.histogram(r, bins=r_edges) #build histogram
+    hist[-1] += np.sum(r > r_edges[-1])  # overflow, finds all depts grater than last bin top edge tgeb adds to the last bin
+
+    total = hist.sum() #adds all values in each bin of hist 
+    if total == 0:
+        return np.zeros_like(hist, dtype=float)
+
+    return hist / total #final fraction
+
+
+def preprocess(data_path: str | Path, n_bins: int = 6):
+    # 1) Load with headers (your split CSVs have headers)
+    df = pd.read_csv(data_path)
+
+    # 2) Normalize column names if they exist
+    rename_map = {
+        "x_ang": "x",
+        "y_ang": "y",
+        "z_ang": "z",
+    }
+    df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+
+    # 3) Coerce numerics
+    #    Figure out which energy column is present and convert ONCE to keV
+    for c in ["x", "y", "z", "ion_number"]:
+        if c not in df.columns:
+            raise KeyError(f"Expected column '{c}' not found in {data_path}")
+
+    # Decide energy source
+    energy_keV = None
+    if "energy_keV" in df.columns:
+        # Already keV
+        energy_keV = pd.to_numeric(df["energy_keV"], errors="coerce")
+    elif "energy_eV" in df.columns:
+        # eV → keV
+        energy_keV = pd.to_numeric(df["energy_eV"], errors="coerce") / 1e3
+    elif "energy" in df.columns:
+        # Detect units by magnitude
+        e_raw = pd.to_numeric(df["energy"], errors="coerce")
+        if np.nanmax(e_raw) > 3000:   # almost surely eV
+            energy_keV = e_raw / 1e3
+        else:                         # already keV
+            energy_keV = e_raw
+    else:
+        raise KeyError("No energy column found: expected one of ['energy_keV','energy_eV','energy'].")
+
+    df["x"] = pd.to_numeric(df["x"], errors="coerce")
+    df["y"] = pd.to_numeric(df["y"], errors="coerce")
+    df["z"] = pd.to_numeric(df["z"], errors="coerce")
+    df["ion_number"] = pd.to_numeric(df["ion_number"], errors="coerce")
+    df["energy_keV"] = pd.to_numeric(energy_keV, errors="coerce")
+
+    df = df.dropna(subset=["x", "y", "z", "ion_number", "energy_keV"]).reset_index(drop=True)
+
+    # 4) Relative-depth bin edges (unchanged)
+    bin_edges = infer_relative_bin_edges(n_bins=n_bins)
+
+    rows, x_obs_list, theta_list, track_ids = [], [], [], []
+
+    # Group by rounded keV + ion_number
+    df["energy_int"] = df["energy_keV"].round().astype(int)
+
+    for (E_int, ion_no), g in df.groupby(["energy_int", "ion_number"], sort=False):
+        x = np.abs(g["x"].to_numpy(float))
+        if x.size == 0:
+            continue
+
+        mean_depth = float(x.mean())
+        max_depth  = float(np.max(x))
+        norm_depth = float(np.percentile(x, 95))
+        n_vac      = int(x.size)
+
+        rbin_fracs = relative_bin_fractions_from_events(x, norm_depth, bin_edges)
+        if rbin_fracs.sum() > 0:
+            rbin_fracs = rbin_fracs / (rbin_fracs.sum() + 1e-12)
+
+        E_keV = float(E_int)  # θ in keV (rounded bin label)
+        tid   = f"C_{int(E_keV)}keV_ion{int(ion_no)}"
+
+        rows.append({
+            "track_id": tid,
+            "ion": "C",
+            "energy_keV": E_keV,
+            "mean_depth_A": mean_depth,
+            "max_depth_A": max_depth,
+            "vacancies_per_ion": n_vac,
+            **{f"rbin_frac_{i+1}": float(v) for i, v in enumerate(rbin_fracs)}
+        })
+
+        x_obs_list.append([mean_depth, max_depth, n_vac, *rbin_fracs])
+        theta_list.append([E_keV])
+        track_ids.append(tid)
+
+    df_summary = pd.DataFrame(rows)
+
+    # Debug sanity
+    print("[DEBUG] energy_keV range:", df_summary["energy_keV"].min(), "→", df_summary["energy_keV"].max())
+    print("[DEBUG] example energies (keV):", df_summary["energy_keV"].unique()[:10])
+
+    x_obs = torch.tensor(np.asarray(x_obs_list, dtype=np.float32))
+    theta = torch.tensor(np.asarray(theta_list, dtype=np.float32))
+
+    return x_obs, theta, track_ids, {"rel_bin_edges": bin_edges}, df_summary
+
+
+
+
 def make_x_test(df_summary, n_per_energy=1, random_state=42):
     """
-    Select representative test tracks (subsampled per energy level).
+    Pick a few sample tracks per energy level for testing.
 
-    Groups only by energy, because (ion, energy) pairs are already unique in preprocess().
+    Tracks are grouped by energy (ion type is already unique from preprocess()).
     """
 
-    # Round energy for stability
+    # round energy to avoid small differences
     df_summary = df_summary.copy()
     df_summary["energy_int"] = df_summary["energy_keV"].round().astype(int)
 
-    # Group by energy only
     sampled_rows = []
     for energy, group in df_summary.groupby("energy_int"):
-        pick = group.sample(
-            n=min(n_per_energy, len(group)),
-            random_state=random_state
-        )
+        pick = group.sample(n=min(n_per_energy, len(group)), random_state=random_state)
         sampled_rows.append(pick)
 
     x_test = pd.concat(sampled_rows).reset_index(drop=True)
 
-    # Sanity checks
-    print(f"[INFO] Selected {len(x_test)} test tracks ({x_test['energy_int'].nunique()} unique energies).")
+    # quick summary
+    print(f"[INFO] Picked {len(x_test)} test tracks across {x_test['energy_int'].nunique()} energies.")
     print(f"[DEBUG] Tracks per energy:\n{x_test.groupby('energy_int').size()}")
 
-    # Return same format as before
     x_test_ids = x_test["track_id"].tolist()
     return x_test, x_test_ids
-
-
-
-
-
-
-def plot_ppc_histograms(
-    df,
-    x_test,
-    x_test_ids,
-    output_dir=None,
-    bins=30,
-    save_plots=True,
-    return_metrics=True,
-):
-    """
-    Global distribution check between simulated SRIM summaries and observed means.
-    (Not per-track PPC, but an aggregated sanity check.)
-    """
-    import numpy as np, matplotlib.pyplot as plt, os
-    from datetime import datetime
-
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    if not isinstance(df, pd.DataFrame) or df.empty:
-        raise ValueError("`df` must be a non-empty DataFrame.")
-
-    # Accept torch or numpy input
-    if hasattr(x_test, "detach"):
-        x_test_np = x_test.detach().cpu().numpy()
-    else:
-        x_test_np = np.asarray(x_test)
-    if x_test_np.ndim != 2 or x_test_np.shape[1] != 3:
-        raise ValueError("`x_test` must have shape (n_tracks, 3).")
-
-    observed_mean = np.mean(x_test_np, axis=0)
-    feature_map = {
-        "mean_depth_A": observed_mean[0],
-        "std_depth_A": observed_mean[1],
-        "vacancies_per_ion": observed_mean[2],
-    }
-
-    features = ["mean_depth_A", "std_depth_A", "vacancies_per_ion"]
-    titles = ["Mean Depth (Å)", "Std. Depth (Å)", "Vacancies per Ion"]
-
-    print(f"[INFO] Global SRIM–Observed Comparison across {len(x_test_ids)} tracks.")
-    print(f"[INFO] Using observed global means: {feature_map}")
-
-    all_metrics = []
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    for feat, title in zip(features, titles):
-        if feat not in df.columns:
-            print(f"[WARN] Missing '{feat}' in SRIM summary; skipping.")
-            continue
-
-        vals = df[feat].dropna().values
-        if vals.size == 0:
-            print(f"[WARN] No data for '{feat}'. Skipping.")
-            continue
-
-        mu, sigma = np.mean(vals), np.std(vals)
-        obs_val = feature_map[feat]
-        delta_percent = abs(obs_val - mu) / (mu if mu != 0 else 1) * 100
-        z_score = np.nan if sigma == 0 else (obs_val - mu) / sigma
-
-        all_metrics.append({
-            "feature": feat,
-            "mu_sim": mu,
-            "sigma_sim": sigma,
-            "obs_mean": obs_val,
-            "delta_percent": delta_percent,
-            "z_score": z_score,
-            "timestamp": stamp,
-        })
-
-        if save_plots:
-            plt.figure(figsize=(6, 4))
-            plt.hist(vals, bins=bins, alpha=0.7, edgecolor="k", density=True, label="Simulated")
-            plt.axvline(mu, color="blue", linestyle=":", label=f"μ = {mu:.2f}")
-            plt.axvline(obs_val, color="red", linestyle="--", label=f"Observed = {obs_val:.2f}")
-            plt.title(f"Global Distribution — {title}")
-            plt.xlabel(title)
-            plt.ylabel("Density")
-            plt.legend()
-            plt.tight_layout()
-            if output_dir:
-                plt.savefig(os.path.join(output_dir, f"PPC_global_{feat}_{stamp}.png"))
-            plt.close()
-
-    if not return_metrics:
-        return None
-
-    metrics_df = pd.DataFrame(all_metrics)
-    if output_dir:
-        metrics_path = os.path.join(output_dir, f"PPC_metrics_global_{stamp}.csv")
-        metrics_df.to_csv(metrics_path, index=False)
-        print(f"[INFO] Saved metrics → {metrics_path}")
-
-    print("\n[PPC] Global Summary Metrics:")
-    print(metrics_df.to_string(index=False))
-    return metrics_df
-
-def tensor_to_observed_dict(x_test, x_test_ids):
-    """
-    Convert x_test tensor + corresponding track IDs into dict format
-    expected by PPC plotting functions.
-    """
-    observed = {}
-    for track_id, values in zip(x_test_ids, x_test.tolist()):
-        observed[track_id] = {
-            "mean_depth_a": float(values[0]),
-            "std_depth_a": float(values[1]),
-            "vacancies_per_ion": float(values[2])
-        }
-    return observed
