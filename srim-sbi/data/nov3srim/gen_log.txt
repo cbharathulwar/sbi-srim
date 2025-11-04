@@ -1,0 +1,48 @@
+[2025-11-03 22:04:50] START | energies=[1, 2.5, 5, 7.5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100] | ions/energy=200
+[2025-11-03 22:04:50] RUN   | 1.0 keV
+[2025-11-03 22:04:54] DONE  | 1.0 keV | rows=2906 | unique_ions=200
+[2025-11-03 22:04:54] RUN   | 2.5 keV
+[2025-11-03 22:04:59] DONE  | 2.5 keV | rows=6313 | unique_ions=200
+[2025-11-03 22:04:59] RUN   | 5.0 keV
+[2025-11-03 22:05:05] DONE  | 5.0 keV | rows=11401 | unique_ions=200
+[2025-11-03 22:05:05] RUN   | 7.5 keV
+[2025-11-03 22:05:13] DONE  | 7.5 keV | rows=15069 | unique_ions=200
+[2025-11-03 22:05:13] RUN   | 10.0 keV
+[2025-11-03 22:05:22] DONE  | 10.0 keV | rows=18442 | unique_ions=200
+[2025-11-03 22:05:22] RUN   | 15.0 keV
+[2025-11-03 22:05:32] DONE  | 15.0 keV | rows=23824 | unique_ions=200
+[2025-11-03 22:05:32] RUN   | 20.0 keV
+[2025-11-03 22:05:44] DONE  | 20.0 keV | rows=28130 | unique_ions=200
+[2025-11-03 22:05:44] RUN   | 25.0 keV
+[2025-11-03 22:05:58] DONE  | 25.0 keV | rows=32793 | unique_ions=200
+[2025-11-03 22:05:58] RUN   | 30.0 keV
+[2025-11-03 22:06:11] DONE  | 30.0 keV | rows=35476 | unique_ions=200
+[2025-11-03 22:06:11] RUN   | 35.0 keV
+[2025-11-03 22:06:26] DONE  | 35.0 keV | rows=38983 | unique_ions=200
+[2025-11-03 22:06:26] RUN   | 40.0 keV
+[2025-11-03 22:06:42] DONE  | 40.0 keV | rows=40953 | unique_ions=200
+[2025-11-03 22:06:42] RUN   | 45.0 keV
+[2025-11-03 22:06:58] DONE  | 45.0 keV | rows=43278 | unique_ions=200
+[2025-11-03 22:06:58] RUN   | 50.0 keV
+[2025-11-03 22:07:16] DONE  | 50.0 keV | rows=45955 | unique_ions=200
+[2025-11-03 22:07:16] RUN   | 55.0 keV
+[2025-11-03 22:07:34] DONE  | 55.0 keV | rows=49890 | unique_ions=200
+[2025-11-03 22:07:34] RUN   | 60.0 keV
+[2025-11-03 22:07:53] DONE  | 60.0 keV | rows=50178 | unique_ions=200
+[2025-11-03 22:07:53] RUN   | 65.0 keV
+[2025-11-03 22:08:12] DONE  | 65.0 keV | rows=51704 | unique_ions=200
+[2025-11-03 22:08:12] RUN   | 70.0 keV
+[2025-11-03 22:08:31] DONE  | 70.0 keV | rows=53496 | unique_ions=200
+[2025-11-03 22:08:31] RUN   | 75.0 keV
+[2025-11-03 22:08:51] DONE  | 75.0 keV | rows=54582 | unique_ions=200
+[2025-11-03 22:08:51] RUN   | 80.0 keV
+[2025-11-03 22:09:12] DONE  | 80.0 keV | rows=57293 | unique_ions=200
+[2025-11-03 22:09:12] RUN   | 85.0 keV
+[2025-11-03 22:09:33] DONE  | 85.0 keV | rows=56993 | unique_ions=200
+[2025-11-03 22:09:33] RUN   | 90.0 keV
+[2025-11-03 22:09:54] DONE  | 90.0 keV | rows=59862 | unique_ions=200
+[2025-11-03 22:09:54] RUN   | 95.0 keV
+[2025-11-03 22:10:16] DONE  | 95.0 keV | rows=59454 | unique_ions=200
+[2025-11-03 22:10:16] RUN   | 100.0 keV
+[2025-11-03 22:10:38] DONE  | 100.0 keV | rows=60472 | unique_ions=200
+[2025-11-03 22:10:40] MASTER| saved -> C:\Users\walsworth.admin\Documents\Chinmay\sbi-srim-main\srim_sbi\data\nov3srim\vacancies.csv | total_rows=897447

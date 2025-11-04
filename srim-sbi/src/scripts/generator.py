@@ -1,21 +1,27 @@
 import os
 import time
 import pandas as pd
-from src.utils.data_generator import run_and_parse_energy
+from ..utils.data_generator import run_and_parse_energy
 
-SRIM_DIR    = "/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013"
-OUTPUT_ROOT = "/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/output_full"
-NUM_IONS    = 200
-MASTER_CSV  = os.path.join(OUTPUT_ROOT, "vacancies_full_dataset.csv")
+# --- CONFIG ---------------------------------------------------
+SRIM_DIR = r"C:\Users\walsworth.admin\Desktop\SRIM-2013"
+OUTPUT_ROOT = r"C:\Users\walsworth.admin\Documents\Chinmay\sbi-srim-main\srim_sbi\data\nov3srim"
+NUM_IONS    = 200   # quick test
+MASTER_CSV  = os.path.join(OUTPUT_ROOT, "vacancies.csv")
 LOG_PATH    = os.path.join(OUTPUT_ROOT, "gen_log.txt")
 
 os.makedirs(OUTPUT_ROOT, exist_ok=True)
 
+# --- ENERGY RANGE (tiny subset) -------------------------------
 def energy_schedule():
-    # Start at 1 keV, step by 2, up to (and including) 100 keV
-    energies = [round(e, 1) for e in range(1, 101, 2)]
-    return energies
+    return [
+        1, 2.5, 5, 7.5, 10,     # fine spacing at low keV
+        15, 20, 25, 30, 35,     
+        40, 45, 50, 55, 60, 65, 70, 75, 80, 85,     
+        90, 95, 100                 
+    ]
 
+# --- LOGGING --------------------------------------------------
 def log(msg):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
@@ -23,7 +29,8 @@ def log(msg):
     with open(LOG_PATH, "a") as f:
         f.write(line + "\n")
 
-def main():
+# --- MAIN LOOP ------------------------------------------------
+def main(): 
     energies = energy_schedule()
     dfs = []
 
@@ -31,8 +38,7 @@ def main():
 
     for E in energies:
         per_csv = os.path.join(OUTPUT_ROOT, f"{E:.1f}_with_energy.csv")
-
-        # Resume-skip
+        # If a CSV already exists, load it
         if os.path.exists(per_csv):
             log(f"SKIP  | {E:.1f} keV (found {per_csv})")
             try:
@@ -40,27 +46,18 @@ def main():
             except Exception as e:
                 log(f"WARN  | Could not read {per_csv}: {e}")
             continue
+        # Only one attempt — no retry
+        try:
+            log(f"RUN   | {E:.1f} keV")
+            df = run_and_parse_energy(E, SRIM_DIR, OUTPUT_ROOT, number_ions=NUM_IONS)
+            uniq_ions = df["ion #"].nunique()
+            log(f"DONE  | {E:.1f} keV | rows={len(df)} | unique_ions={uniq_ions}")
+            dfs.append(df)
+        except Exception as e:
+            log(f"FAIL  | {E:.1f} keV: {e}")
+            log(f"GIVEUP| {E:.1f} keV")
 
-        # Run with one retry guard
-        for attempt in (1, 2):
-            try:
-                log(f"RUN   | {E:.1f} keV | attempt {attempt}")
-                df = run_and_parse_energy(E, SRIM_DIR, OUTPUT_ROOT, number_ions=NUM_IONS)
-                # sanity: ion count check (optional)
-                uniq_ions = df["ion #"].nunique()
-                if uniq_ions < NUM_IONS:
-                    log(f"WARN  | {E:.1f} keV: ions seen={uniq_ions} < target={NUM_IONS}")
-                dfs.append(df)
-                log(f"DONE  | {E:.1f} keV | rows={len(df)}")
-                break
-            except Exception as e:
-                log(f"FAIL  | {E:.1f} keV attempt {attempt}: {e}")
-                if attempt == 2:
-                    log(f"GIVEUP| {E:.1f} keV")
-                else:
-                    time.sleep(3)
-
-    # Combine everything we have
+    # Combine everything
     if dfs:
         master = pd.concat(dfs, ignore_index=True)
         master.to_csv(MASTER_CSV, index=False)
@@ -68,5 +65,6 @@ def main():
     else:
         log("ERROR | no dataframes produced")
 
+# --- ENTRYPOINT -----------------------------------------------
 if __name__ == "__main__":
     main()
