@@ -1,8 +1,0 @@
-[2025-10-29 22:04:12] START | energies=[5.0, 10.0, 20.0] | ions/energy=3
-[2025-10-29 22:04:12] RUN   | 5.0 keV | attempt 1
-[2025-10-29 22:04:15] DONE  | 5.0 keV | rows=147 | unique_ions=35
-[2025-10-29 22:04:15] RUN   | 10.0 keV | attempt 1
-[2025-10-29 22:04:16] DONE  | 10.0 keV | rows=266 | unique_ions=69
-[2025-10-29 22:04:16] RUN   | 20.0 keV | attempt 1
-[2025-10-29 22:04:18] DONE  | 20.0 keV | rows=435 | unique_ions=72
-[2025-10-29 22:04:18] MASTER| saved -> /Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/output_quicktest/vacancies_quicktest.csv | total_rows=848

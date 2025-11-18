@@ -1,0 +1,18 @@
+============================== SRIM-2013.00 ==============================
+==============================================================================
+====== SRIM Outputs\RANGE_3D.txt : File of Final Ion Positions =====
+
+Ion =  C (06)   Ion Mass= 012.0107
+Energy  = 5906906.E-05 keV
+Ion Angle to Surface = 00.0 degrees
+==================== TARGET =======================
+  Layer # 1 - None
+  Layer # 1 - Bottom Depth=200000.E-01 A
+  Layer # 1 - Density =0003.5100 g/cm3
+  Layer # 1 -  100 % of  C
+様様様様様様様様様様様様様様様様様様様様様様様様様様
+                                            
+Ion       Depth  X   Lateral Y   Lateral Z  
+Number    (Angstrom) (Angstrom)  (Angstrom) 
+-------  ----------- ----------- -----------
+0000001   8.6717E+02 -2.8407E+02  3.4124E+01
