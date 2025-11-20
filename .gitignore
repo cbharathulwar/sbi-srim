@@ -1,1 +1,35 @@
+# =========================================
+# IGNORE GENERATED DATA & SRIM OUTPUT
+# =========================================
+data/
+*/data/
+results/
+*/results/
+
+# Ignore any SRIM-generated text/csv files
+*.txt
+*.csv
+
+# BUT keep important code CSVs (whitelist)
+!src/**/*.csv
+!tests/**/*.csv
+
+# =========================================
+# IGNORE SRIM BINARIES
+# =========================================
+SRIM-2013/
+*/SRIM-2013/
+
+# =========================================
+# IGNORE LARGE FILES
+# =========================================
+*.output
+*.ion
+*.save
+
+# =========================================
+# PYTHON NOISE
+# =========================================
+__pycache__/
+*.pyc
 .DS_Store
