@@ -27,7 +27,7 @@ from src.evaluation.eval_mnpe import evaluate_random_srims_mnpe
 # ---------------------------------------------
 RAW_CSV = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/nov3srim/centered_tracks.csv")
 SRIM_DIR = Path("/Users/cbharathulwar/Documents/Research/Walsworth/SRIM-2013")
-RESULTS_DIR = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data")
+RESULTS_DIR = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/results")
 
 POSTERIOR_FILE = RESULTS_DIR / "trained_posterior_mnpe.pt"
 
@@ -84,8 +84,8 @@ def run_pipeline():
     posterior = train_or_load_posterior(x_obs, theta)
 
     # 3. Random SRIM evaluation
-    output_root = RESULTS_DIR / "random_eval_mnpe"
-    output_csv  = RESULTS_DIR / "random_eval_results_mnpe.csv"
+    output_root = RESULTS_DIR / "Nov19Run1"
+    output_csv  = RESULTS_DIR / "Nov19_mnpe.csv"
 
     evaluate_random_srims_mnpe(
         posterior=posterior,
@@ -93,8 +93,8 @@ def run_pipeline():
         output_root=output_root,
         prior_low=PRIOR_LOW,
         prior_high=PRIOR_HIGH,
-        n_random=1000,
-        n_ions=1,
+        n_random=250,
+        n_ions=200,
         n_post_samples=500,
         n_bins=N_BINS,
         save_csv=output_csv,

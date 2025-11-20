@@ -256,7 +256,13 @@ def preprocess_mnpe(data_path: str | Path, n_bins: int = 6):
         norm_depth = float(np.percentile(abs_x, 95))
         n_vac = int(len(x))
 
-        rbin_fracs = relative_bin_fractions_from_events(abs_x, norm_depth, r_edges)
+                # FIXED RBIN DEFINITION — USE TRACK EXTENT, NOT abs(x)
+        depth_coord = x - np.min(x)                  # 0 → track end
+        norm_depth_bins = float(np.percentile(depth_coord, 95))
+
+        rbin_fracs = relative_bin_fractions_from_events(
+            depth_coord, norm_depth_bins, r_edges
+        )
         asym_count = compute_centered_track_asymmetry(x)
         asym_nn = compute_centered_nn_asymmetry(x, z)
 

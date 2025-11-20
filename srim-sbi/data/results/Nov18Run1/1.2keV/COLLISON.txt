@@ -1,0 +1,60 @@
+============================== SRIM-2013.00 ==============================
+==============================================================================
+------------------------------------------------------------------------------
+====== TRIM Calc.=  C(1.18 keV) ==> None(  2 um) =============================
+------------------------------------------------------------------------------
+============================================================
+º     Ion Name   =      C                                  º
+º     Ion Mass   =    012.011 amu                          º
+º     Ion Energy =000000001.2 keV                          º
+============================================================
+>      C  Displacement Energy of  C = 0028.00000 eV
+  Latt.Binding Energy of  C = 0003.00000 eV
+  SurfaceBind. Energy of  C = 0007.41000 eV
+============================================================
+ 
+==========================  COLLISION HISTORY  =======================================================
+  NOTES: Only Ion Collisions which produce Displacements are tabulated.                               
+         Atom Sums and Averages are Incomplete if Recoil Cascades Leave Target.                       
+         Target DISPlacements = VACancies + REPLACement Collisions.                                   
+         Target VACancies = INTERstitials + Sputtered + Transmitted Atoms.                            
+                            Recoil Atoms which end at the surface, are not counted (see manual).      
+======================================================================================================
+  Ion    Energy    Depth     Lateral Distance (A)   Se    Atom  Recoil    Target Target Target Target 
+  Numb   (keV)      (A)       Y Axis    Z Axis    (eV/A)  Hit  Energy(eV) DISP.  VAC.   REPLAC INTER  
+------------------------------------------------------------------------------------------------------
+³00001³10.95E-01³81511.E-04³ 9222.E-04³ 5386.E-05³0009.17³  C ³59540.E-03³ <== Start of New Cascade  ³
+=================================================================================
+  Recoil Atom Energy(eV)   X (A)      Y (A)      Z (A)   Vac Repl Ion Numb 00001=
+Û 00001   06  59540.E-03 8151.E-03  9222.E-04  5386.E-05  1   00 Û<ÄPrime RecoilÛ
+==================================================================
+³                                Summary of Above Cascade ==> ³59540.E-03³000001³000001³000000³000001³
+³00001³70.45E-02³31830.E-03³ 3492.E-03³-1652.E-03³0007.35³  C ³70092.E-02³ <== Start of New Cascade  ³
+=================================================================================
+  Recoil Atom Energy(eV)   X (A)      Y (A)      Z (A)   Vac Repl Ion Numb 00001=
+Û 00001   06  70092.E-02 3183.E-02  3492.E-03 -1652.E-03  1   00 Û<ÄPrime RecoilÛ
+Û 00002   06  95214.E-03 2391.E-02  2750.E-02  1315.E-02  1   00 Û
+Û 00003   06  38794.E-03 1722.E-02  2597.E-02  1388.E-02  1   00 Û
+Û 00004   06  12055.E-02 2708.E-02  2693.E-02  1460.E-02  1   00 Û
+Û 00005   06  73687.E-03 2852.E-02  2630.E-02  1374.E-02  1   00 Û
+Û 00006   06  33516.E-03 2770.E-02  2188.E-02  1647.E-02  1   00 Û
+Û 00007   06  87782.E-03 3249.E-02  2171.E-02  5110.E-03  1   00 Û
+Û 00008   06  48515.E-03 3254.E-02  2058.E-02  3726.E-03  1   00 Û
+Û 00009   06  66279.E-03 3238.E-02  2025.E-02  4088.E-03  1   00 Û
+Û 00010   06  10584.E-05 3234.E-02  2090.E-02  2424.E-03  0   01 Û
+Û 00011   06  59502.E-03 3234.E-02  2090.E-02  2424.E-03  1   00 Û
+Û 00012   06  40904.E-03 3219.E-02  1990.E-02  9497.E-04  1   00 Û
+==================================================================
+³                                Summary of Above Cascade ==> ³70092.E-02³000011³000010³000001³000011³
+======================================================================================================
+- For Ion 0000001:               For All Ions to date :                                              º
+- Displacements     = 000012.0   Average Displacements/Ion     = 0000012.000                         º
+- Replacements      = 000001.0   Average Replacements/Ion      = 0000001.000                         º
+- Vacancies         = 000011.0   Average Vacancies/Ion         = 0000011.000                         º
+- Interstitials     = 000012.0   Average Interstitials/Ion     = 0000012.000                         º
+- Sputtered Atoms   = 000000.0   Average Sputter Atoms/Ion     = 0000000.000                         º
+- Transmitted Atoms = 000000.0   Average Transmitted Atoms/Ion = 0000000.000                         º
+======================================================================================================
+  Ion    Energy    Depth     Lateral Distance (A)   Se    Atom  Recoil    Target Target Target Target 
+  Numb   (keV)      (A)       Y Axis    Z Axis    (eV/A)  Hit  Energy(eV) DISP.  VAC.   REPLAC INTER  
+------------------------------------------------------------------------------------------------------
