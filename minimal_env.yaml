@@ -1,0 +1,12 @@
+name: sbi
+channels:
+  - defaults
+dependencies:
+  - python=3.12
+  - sbi
+  - seaborn
+  - ipywidgets
+  - joblib
+  - pytest
+  - black
+prefix: /opt/homebrew/Caskroom/miniconda/base/envs/sbi
