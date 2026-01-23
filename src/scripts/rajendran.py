@@ -10,7 +10,7 @@ from src.utils.srim_utils import parse_collisions
 # CONFIG
 # ==========================================================
 
-BASE = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/results/nov19run5")
+BASE = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/results")
 
 ENERGIES = [1, 3, 10, 20, 30, 50, 70, 100]
 OUTPUT_RESULTS = BASE / "rajendran_results.csv"

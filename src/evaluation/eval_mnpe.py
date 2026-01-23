@@ -1,359 +1,362 @@
-# src/evaluation/random_eval_mnpe.py
+# """
+# MNPE Evaluation Utilities
+# -------------------------
+# - Fixed-energy SRIM evaluation
+# - Evaluation from saved per-track CSVs
+# - Passive observer for hard negative mining
+# """
 
-"""
-Random SRIM Evaluation for MNPE (energy + parity)
---------------------------------------------------
-This evaluates your 2D posterior:
+# # ===============================================================
+# # Imports
+# # ===============================================================
+# import random
+# import torch
+# import pandas as pd
+# import numpy as np
+# from pathlib import Path
 
-        θ = [energy_keV, parity]
+# from src.utils.data_utils import preprocess_mnpe
+# from src.utils.srim_utils import run_srim_for_energy, parse_collisions
+# from src.utils.sbi_runner import guarded_posterior_sample
 
-Steps:
-    1. Sample energy & parity
-    2. Run SRIM
-    3. Inject parity flip into X coords
-    4. Center track
-    5. Preprocess with preprocess_mnpe
-    6. Posterior sampling
-"""
+# # ===============================================================
+# # GLOBAL STATE (HNM BUFFERS)
+# # ===============================================================
 
-import os
-import time
-import random
+# # ALL failed tracks
+# failed_raw_rows_all = []
+# failed_metadata_all = []
+# seen_failed_all = set()
+
+# # CONFIDENT failed tracks
+# failed_raw_rows_confident = []
+# failed_metadata_confident = []
+# seen_failed_confident = set()
+
+# # Confidence threshold (set by runner)
+# CONFIDENCE_THRESHOLD = None
+
+
+# # ===============================================================
+# # CONFIG HELPERS
+# # ===============================================================
+# def set_confidence_threshold(threshold):
+#     global CONFIDENCE_THRESHOLD
+#     CONFIDENCE_THRESHOLD = threshold
+
+
+# # ===============================================================
+# # OBSERVER (PASSIVE)
+# # ===============================================================
+# def observe_and_collect_failed_track(
+#     df_centered,
+#     ion_number,
+#     energy,
+#     true_parity,
+#     posterior_samples,
+# ):
+#     """
+#     Passive observer:
+#     - detects parity failure
+#     - collects ALL failed tracks
+#     - optionally collects CONFIDENT failed tracks
+#     """
+
+#     parity_samples = posterior_samples[:, 1].detach().cpu().numpy()
+#     votes = parity_samples > 0.5
+#     p_hat = votes.mean()
+
+#     pred_parity = 1 if p_hat >= 0.5 else 0
+#     if pred_parity == true_parity:
+#         return
+
+#     confidence = max(p_hat, 1.0 - p_hat)
+
+#     raw_rows = df_centered[df_centered["ion_number"] == ion_number].copy()
+#     if raw_rows.empty:
+#         return
+
+#     track_key = (float(energy), int(ion_number), int(true_parity))
+
+#     # ---- ALL failed ----
+#     if track_key not in seen_failed_all:
+#         failed_raw_rows_all.append(raw_rows)
+#         failed_metadata_all.append({
+#             "energy": float(energy),
+#             "ion_number": int(ion_number),
+#             "true_parity": int(true_parity),
+#             "pred_parity": int(pred_parity),
+#             "confidence": float(confidence),
+#             "p_hat": float(p_hat),
+#             "n_events": len(raw_rows),
+#             "bucket": "all_failed",
+#         })
+#         seen_failed_all.add(track_key)
+
+#     # ---- CONFIDENT failed ----
+#     if CONFIDENCE_THRESHOLD is not None and confidence >= CONFIDENCE_THRESHOLD:
+#         if track_key not in seen_failed_confident:
+#             failed_raw_rows_confident.append(raw_rows)
+#             failed_metadata_confident.append({
+#                 "energy": float(energy),
+#                 "ion_number": int(ion_number),
+#                 "true_parity": int(true_parity),
+#                 "pred_parity": int(pred_parity),
+#                 "confidence": float(confidence),
+#                 "p_hat": float(p_hat),
+#                 "n_events": len(raw_rows),
+#                 "confidence_threshold": CONFIDENCE_THRESHOLD,
+#                 "bucket": "confident_failed",
+#             })
+#             seen_failed_confident.add(track_key)
+
+
+# # ===============================================================
+# # FIXED-ENERGY SRIM EVALUATION
+# # ===============================================================
+# def evaluate_fixed_energies_mnpe(
+#     posterior,
+#     srim_dir,
+#     output_root,
+#     energies_keV,
+#     *,
+#     n_ions=200,
+#     n_post_samples=500,
+#     n_bins=6,
+#     save_csv=None,
+# ):
+#     output_root = Path(output_root)
+#     output_root.mkdir(parents=True, exist_ok=True)
+
+#     all_results = []
+
+#     for E in energies_keV:
+#         print(f"\n[MNPE] Running SRIM for {E} keV")
+
+#         run_dir = run_srim_for_energy(E, srim_dir, output_root, number_ions=n_ions)
+#         df = parse_collisions(run_dir, E)
+#         if df.empty:
+#             continue
+
+#         ion_ids = sorted(df["ion_number"].unique())
+#         random.shuffle(ion_ids)
+
+#         half = len(ion_ids) // 2
+#         flipped = set(ion_ids[:half])
+#         df["parity"] = df["ion_number"].apply(lambda i: 0 if i in flipped else 1)
+#         df.loc[df["parity"] == 0, "x"] *= -1
+
+#         centered = []
+#         for ion in ion_ids:
+#             part = df[df["ion_number"] == ion].copy()
+#             for c in ["x", "y", "z"]:
+#                 part[c] -= part[c].mean()
+#             centered.append(part)
+
+#         df_centered = pd.concat(centered, ignore_index=True)
+
+#         ion_csvs = {}
+#         for ion in ion_ids:
+#             out_csv = Path(run_dir) / f"{E:.1f}keV_ion{ion}.csv"
+#             df_centered[df_centered["ion_number"] == ion].to_csv(out_csv, index=False)
+#             ion_csvs[ion] = out_csv
+
+#         for ion, csv_path in ion_csvs.items():
+#             x_obs, _, tids, _, df_sum = preprocess_mnpe(csv_path, n_bins=n_bins)
+#             if len(x_obs) != 1:
+#                 continue
+
+#             x = x_obs[0].unsqueeze(0)
+#             tid = tids[0]
+#             true_parity = int(df_sum["parity"].iloc[0])
+
+#             samples = guarded_posterior_sample(posterior, x, n_samples=n_post_samples)
+#             if samples is None:
+#                 continue
+
+#             observe_and_collect_failed_track(
+#                 df_centered, ion, E, true_parity, samples
+#             )
+
+#             E_pred = samples[:, 0].mean().item()
+#             P_pred = int(samples[:, 1].round().mode()[0].item())
+
+#             all_results.append({
+#                 "energy_keV": E,
+#                 "ion_number": ion,
+#                 "track_id": tid,
+#                 "true_parity": true_parity,
+#                 "pred_parity": P_pred,
+#                 "parity_correct": int(P_pred == true_parity),
+#                 "pred_energy_mean": E_pred,
+#                 "pred_energy_std": samples[:, 0].std().item(),
+#                 "percent_error_abs": 100 * abs(E_pred - E) / E,
+#                 "csv_path": str(csv_path),
+#                 "status": "OK",
+#             })
+
+#     df_out = pd.DataFrame(all_results)
+#     if save_csv:
+#         df_out.to_csv(save_csv, index=False)
+
+#     return df_out
+
+
+# # ===============================================================
+# # EVALUATION FROM SAVED TRACKS (NO SRIM)
+# # ===============================================================
+# def evaluate_from_saved_tracks_mnpe(
+#     *,
+#     posterior,
+#     saved_tracks_root,
+#     output_csv,
+#     n_bins=6,
+#     n_post_samples=500,
+#     use_observer=False,
+# ):
+#     saved_tracks_root = Path(saved_tracks_root)
+#     all_results = []
+
+#     for csv_path in saved_tracks_root.rglob("*_ion*.csv"):
+#         df = pd.read_csv(csv_path)
+#         if "energy_keV" in df.columns:
+#             df = df.rename(columns={"energy_keV": "energy"})
+
+#         tmp = csv_path.with_suffix(".tmp.csv")
+#         df.to_csv(tmp, index=False)
+
+#         x_obs, _, tids, _, df_sum = preprocess_mnpe(tmp, n_bins=n_bins)
+#         tmp.unlink(missing_ok=True)
+
+#         if len(x_obs) != 1:
+#             continue
+
+#         x = x_obs[0].unsqueeze(0)
+#         tid = tids[0]
+#         if "energy" in df_sum.columns:
+#             true_energy = float(df_sum["energy"].iloc[0])
+#         elif "energy_keV" in df_sum.columns:
+#             true_energy = float(df_sum["energy_keV"].iloc[0])
+#         else:
+#             raise KeyError(f"No energy column found in df_summary: {df_sum.columns}")
+#         true_parity = int(df_sum["parity"].iloc[0])
+#         # Extract ion_number from filename: *_ion{N}.csv
+#         stem = csv_path.stem          # e.g. "4.0keV_ion0"
+#         if "_ion" in stem:
+#             ion_number = int(stem.split("_ion")[-1])
+#         else:
+#             ion_number = -1  # fallback, should never happen
+
+#         samples = guarded_posterior_sample(posterior, x, n_samples=n_post_samples, hard_timeout_sec=120)
+#         if samples is None:
+#             continue
+
+#         if use_observer:
+#             observe_and_collect_failed_track(df, ion_number, true_energy, true_parity, samples)
+
+#         E_pred = samples[:, 0].mean().item()
+#         P_pred = int(samples[:, 1].round().mode()[0].item())
+
+#         all_results.append({
+#             "energy_keV": true_energy,
+#             "ion_number": ion_number,
+#             "track_id": tid,
+#             "true_parity": true_parity,
+#             "pred_parity": P_pred,
+#             "parity_correct": int(P_pred == true_parity),
+#             "pred_energy_mean": E_pred,
+#             "pred_energy_std": samples[:, 0].std().item(),
+#             "percent_error_abs": 100 * abs(E_pred - true_energy) / true_energy,
+#             "csv_path": str(csv_path),
+#             "status": "OK",
+#         })
+
+#     df_out = pd.DataFrame(all_results)
+#     df_out.to_csv(output_csv, index=False)
+#     return df_out
+
+
+
+
+
+
 import torch
 import pandas as pd
+import numpy as np
 from pathlib import Path
 
 from src.utils.data_utils import preprocess_mnpe
-from src.utils.srim_utils import run_srim_for_energy, parse_collisions
 from src.utils.sbi_runner import guarded_posterior_sample
 
-
-
-
-from src.utils.sbi_runner import sample_energy, guarded_posterior_sample
-def evaluate_one_random_mnpe(
-    posterior,
-    prior_low,
-    prior_high,
-    srim_dir,
-    out_root,
-    *,
-    sample_mode="continuous",
-    step=None,
-    n_ions=200,
-    n_post_samples=500,
-    n_bins=6,
-):
-    """
-    Evaluate MNPE for ONE randomly sampled energy + 200 tracks.
-    Parity is assigned PER ION (correct), tracks are centered PER ION.
-    """
-
-    # ------------------------------------------------------
-    # 1. Draw true parameters
-    # ------------------------------------------------------
-    E_true = sample_energy(
-        low=prior_low,
-        high=prior_high,
-        mode=sample_mode,
-        step=step,
-    )
-
-    print(f"[INFO][MNPE] True energy = {E_true:.3f} keV")
-
-    # ------------------------------------------------------
-    # 2. Run SRIM for this energy
-    # ------------------------------------------------------
-    run_dir = run_srim_for_energy(E_true, srim_dir, out_root, number_ions=n_ions)
-    df = parse_collisions(run_dir, E_true)
-
-    if df.empty:
-        print("[WARN] Empty SRIM output.")
-        return None
-
-    # ------------------------------------------------------
-    # 3. Assign parity PER ION (correct)
-    # ------------------------------------------------------
-    ion_ids = sorted(df["ion_number"].unique().tolist())
-    par_assign = {ion: random.choice([0, 1]) for ion in ion_ids}
-
-    df["parity"] = df["ion_number"].map(par_assign)
-
-    # Apply flip for parity 0 ions
-    df.loc[df["parity"] == 0, "x"] *= -1
-
-    # ------------------------------------------------------
-    # 4. Center EACH ION SEPARATELY
-    # ------------------------------------------------------
-    centered_tracks = []
-    for ion in ion_ids:
-        g = df[df["ion_number"] == ion].copy()
-        g["x"] -= g["x"].mean()
-        g["y"] -= g["y"].mean()
-        g["z"] -= g["z"].mean()
-        centered_tracks.append(g)
-
-    df_centered = pd.concat(centered_tracks, ignore_index=True)
-
-    # Save combined CSV for preprocessing
-    csv_path = Path(run_dir) / f"{E_true:.3f}keV_random.csv"
-    df_centered.to_csv(csv_path, index=False)
-
-    # ------------------------------------------------------
-    # 5. Preprocess ALL 200 tracks
-    # ------------------------------------------------------
-    x_obs_all, _, track_ids, _, _ = preprocess_mnpe(csv_path, n_bins=n_bins)
-
-    if len(x_obs_all) != n_ions:
-        print(f"[WARN] Expected {n_ions} tracks but found {len(x_obs_all)}")
-
-    # ------------------------------------------------------
-    # 6. Run posterior for each track
-    # ------------------------------------------------------
-    all_results = []
-
-    for i in range(len(x_obs_all)):
-        x = x_obs_all[i].unsqueeze(0)
-        true_par = par_assign[ion_ids[i]]
-
-        samples = guarded_posterior_sample(
-            posterior,
-            x,
-            n_samples=n_post_samples,
-            hard_timeout_sec=180,
-        )
-
-        if samples is None:
-            all_results.append({
-                "track_id": track_ids[i],
-                "true_energy_keV": E_true,
-                "true_parity": true_par,
-                "status": "SKIPPED",
-            })
-            continue
-
-        # Convert samples back to tensor if numpy
-        E_pred = samples[:, 0].mean().item()
-        E_std  = samples[:, 0].std().item()
-        P_pred = int(samples[:, 1].round().mode()[0].item())
-
-        all_results.append({
-            "track_id": track_ids[i],
-            "true_energy_keV": E_true,
-            "true_parity": true_par,
-            "pred_energy_mean": E_pred,
-            "pred_energy_std": E_std,
-            "pred_parity": P_pred,
-            "parity_correct": int(P_pred == true_par),
-            "percent_error_abs": 100 * abs(E_pred - E_true) / E_true,
-            "status": "OK",
-            "csv_path": str(csv_path),
-        })
-
-    return all_results
-
-def evaluate_random_srims_mnpe(
-    posterior,
-    srim_dir,
-    output_root,
-    prior_low,
-    prior_high,
-    n_random=100,
-    *,
-    sample_mode="continuous",
-    step=None,
-    n_ions=200,
-    n_post_samples=500,
-    n_bins=6,
-    save_csv=None,
-):
-    """Run many random MNPE evaluations with controlled sampling (ALL ions)."""
-
-    output_root = Path(output_root)
-    output_root.mkdir(exist_ok=True, parents=True)
-
-    all_results = []   # <-- FLATTENED LIST OF DICTS
-
-    for i in range(n_random):
-        print(f"\n[MNPE TEST {i+1}/{n_random}]")
-
-        batch_results = evaluate_one_random_mnpe(
-            posterior=posterior,
-            prior_low=prior_low,
-            prior_high=prior_high,
-            srim_dir=srim_dir,
-            out_root=output_root,
-            sample_mode=sample_mode,
-            step=step,
-            n_ions=n_ions,
-            n_post_samples=n_post_samples,
-            n_bins=n_bins,
-        )
-
-        if batch_results is None:
-            continue
-
-        # batch_results is a LIST of ~200 track dicts
-        all_results.extend(batch_results)
-
-    # Build DataFrame
-    df = pd.DataFrame(all_results)
-
-    if save_csv:
-        df.to_csv(save_csv, index=False)
-        print(f"[MNPE] Saved → {save_csv}")
-
-    return df
-
 # ===============================================================
-# FIXED-ENERGY MNPE EVALUATION (correct scientific evaluation)
+# SIIMPL BATCH EVALUATION (The New Standard)
 # ===============================================================
-import os
-import random
 import pandas as pd
-from pathlib import Path
 import torch
-
-from src.utils.srim_utils import run_srim_for_energy, parse_collisions
 from src.utils.data_utils import preprocess_mnpe
-from src.utils.sbi_runner import guarded_posterior_sample
 
+import pandas as pd
+import torch
+import numpy as np
+from src.utils.data_utils import preprocess_mnpe
+from src.utils.sbi_runner import guarded_posterior_sample, get_device
 
-def evaluate_fixed_energies_mnpe(
-    posterior,
-    srim_dir,
-    output_root,
-    energies_keV=[1, 3, 10, 30, 100],
-    *,
-    n_ions=200,
-    n_post_samples=500,
-    n_bins=6,
-    save_csv=None,
-):
-    """
-    Evaluate MNPE model over FIXED energies — NOT random sampling.
+def evaluate_siimpl_batch(posterior, eval_csv_path, output_csv_path, n_bins=6):
+    print(f"[EVAL] Loading eval dataset: {eval_csv_path}")
+    device = get_device()
     
-    Steps:
-        • For each E in energies_keV:
-            - Run SRIM once → 200 ions
-            - Parse collisions → 200 tracks
-            - Assign parity: flip x for 50% of tracks
-            - Preprocess each track
-            - Evaluate posterior for each track
-            - Store predictions
-    """
+    # 1. Get tensors AND the physics summary dataframe
+    x_eval, theta_eval, tids, _, df_physics = preprocess_mnpe(eval_csv_path, n_bins=n_bins)
+    
+    predictions = []
+    confidences = []
+    pred_energies = []
 
-    output_root = Path(output_root)
-    output_root.mkdir(parents=True, exist_ok=True)
+    print(f"[EVAL] Evaluating {len(x_eval)} tracks...")
+    
+    # 2. SAMPLING LOOP
+    for i in range(len(x_eval)):
+        # Draw 100 samples from the posterior for this track
+        samples = guarded_posterior_sample(posterior, x_eval[i].unsqueeze(0), n_samples=100)
+        
+        if samples is not None:
+            # MNPE Order: [Energy (0), Parity (1)]
+            energy_samples = samples[:, 0].numpy()
+            parity_samples = samples[:, 1].numpy().astype(int)
+            
+            # Use mode for Parity (Discrete)
+            vals, counts = np.unique(parity_samples, return_counts=True)
+            mode_idx = np.argmax(counts)
+            
+            predictions.append(vals[mode_idx])
+            confidences.append(counts[mode_idx] / 100.0) # Fraction of samples in the mode
+            pred_energies.append(np.mean(energy_samples))
+        else:
+            # Fallback for failed samples
+            predictions.append(-1)
+            confidences.append(0.0)
+            pred_energies.append(0.0)
+            
+        if (i + 1) % 100 == 0:
+            print(f"   Evaluated {i+1}/{len(x_eval)}...")
 
-    all_results = []
-
-    # -----------------------------------------------------------
-    # MAIN LOOP OVER ENERGIES
-    # -----------------------------------------------------------
-    for E in energies_keV:
-
-        print(f"\n===========================================")
-        print(f"[MNPE] Running SRIM for fixed energy {E} keV")
-        print(f"===========================================\n")
-
-        # Run SRIM (ONE RUN) with 200 ions
-        run_dir = run_srim_for_energy(E, srim_dir, output_root, number_ions=n_ions)
-
-        # Parse all collision cascades
-        df = parse_collisions(run_dir, E)
-        if df.empty:
-            print(f"[WARN] No SRIM output for {E} keV")
-            continue
-
-        # -----------------------------------------------------------
-        # CREATE PARITY LABELS
-        # -----------------------------------------------------------
-        ion_ids = sorted(df["ion_number"].unique().tolist())
-        random.shuffle(ion_ids)
-
-        half = len(ion_ids) // 2
-        flipped = set(ion_ids[:half])     # 50% flipped = parity 0
-        unflipped = set(ion_ids[half:])   # 50% not flipped = parity 1
-
-        df["parity"] = df["ion_number"].apply(lambda t: 0 if t in flipped else 1)
-
-        # Apply parity flip
-        df.loc[df["parity"] == 0, "x"] *= -1
-
-        # Center each ion’s track (important)
-        centered = []
-        for ion in ion_ids:
-            part = df[df["ion_number"] == ion].copy()
-            part["x"] -= part["x"].mean()
-            part["y"] -= part["y"].mean()
-            part["z"] -= part["z"].mean()
-            centered.append(part)
-
-        df = pd.concat(centered, ignore_index=True)
-
-        # Save combined CSV (optional)
-        combined_csv = Path(run_dir) / f"{E:.1f}keV_alltracks.csv"
-        df.to_csv(combined_csv, index=False)
-
-        # -----------------------------------------------------------
-        # Preprocess for MNPE model
-        # -----------------------------------------------------------
-        x_obs_all, _, track_ids, _, _ = preprocess_mnpe(combined_csv, n_bins=n_bins)
-
-        # -----------------------------------------------------------
-        # POSTERIOR EVALUATION PER TRACK
-        # -----------------------------------------------------------
-        for i in range(len(x_obs_all)):
-            print(f"[Track {i+1}/{len(x_obs_all)} @ {E} keV]")
-
-            x = x_obs_all[i].unsqueeze(0)
-            true_parity = int(df[df["ion_number"] == i]["parity"].iloc[0])
-
-            samples = guarded_posterior_sample(
-                posterior,
-                x,
-                n_samples=n_post_samples,
-                hard_timeout_sec=120,
-            )
-
-            if samples is None:
-                all_results.append({
-                    "energy_keV": E,
-                    "ion_number": i,
-                    "true_parity": true_parity,
-                    "status": "SKIPPED",
-                })
-                continue
-
-            samples = samples.cpu()
-
-            E_pred = samples[:, 0].mean().item()
-            E_std  = samples[:, 0].std().item()
-
-            P_pred = int(samples[:, 1].round().mode()[0].item())
-            correct = int(P_pred == true_parity)
-
-            all_results.append({
-                "energy_keV": E,
-                "ion_number": i,
-                "true_parity": true_parity,
-                "pred_parity": P_pred,
-                "parity_correct": correct,
-                "pred_energy_mean": E_pred,
-                "pred_energy_std": E_std,
-                "csv_path": str(combined_csv),
-                "status": "OK",
-            })
-
-    # -----------------------------------------------------------
-    # FINAL SAVE
-    # -----------------------------------------------------------
-    df_out = pd.DataFrame(all_results)
-
-    if save_csv:
-        df_out.to_csv(save_csv, index=False)
-        print(f"[MNPE] Final results saved → {save_csv}")
-
-    print("\n[MNPE] Completed fixed-energy evaluation.\n")
-    return df_out
+    # 3. Build the prediction dataframe
+    results_df = pd.DataFrame({
+        'track_id': tids,
+        'true_energy': theta_eval[:, 0].numpy(),
+        'true_parity': theta_eval[:, 1].numpy().astype(int),
+        'pred_parity': predictions,
+        'confidence': confidences,
+        'pred_energy': pred_energies
+    })
+    
+    # 4. MERGE: Add physics features (skew, var, etc.) to the results
+    # This prevents the KeyError: 'skew_z' in your notebook
+    final_df = pd.merge(results_df, df_physics, on='track_id')
+    
+    final_df.to_csv(output_csv_path, index=False)
+    
+    # Calculate and print final accuracy for the console
+    acc = (final_df['true_parity'] == final_df['pred_parity']).mean() * 100
+    print(f"📊 Final Accuracy: {acc:.2f}%")
+    print(f"✅ Saved merged results to: {output_csv_path}")
