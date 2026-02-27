@@ -23,8 +23,8 @@ EVAL_CSV  = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/sri
 
 # 2. OUTPUTS
 RESULTS_DIR = Path("/Users/cbharathulwar/Documents/Research/Walsworth/Code/SBI/srim-sbi/data/results")
-POSTERIOR_FILE = RESULTS_DIR / "posterior_NVsiimpl_800keV.pt"
-EVAL_RESULTS_CSV = RESULTS_DIR / "results_NVsiimpl2_800keV.csv"
+POSTERIOR_FILE = RESULTS_DIR / "posterior_NVsiimpl6_800keV.pt"
+EVAL_RESULTS_CSV = RESULTS_DIR / "results_NVsiimpl6_800keV.csv"
 
 # 3. PHYSICS PRIORS (Critical Change!)
 # We must cover the 800 keV range.

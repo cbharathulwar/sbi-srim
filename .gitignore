@@ -13,6 +13,7 @@ results/
 # BUT keep important code CSVs (whitelist)
 !src/**/*.csv
 !tests/**/*.csv
+!notebooks/**/*.csv
 
 # =========================================
 # IGNORE SRIM BINARIES
@@ -28,8 +29,21 @@ SRIM-2013/
 *.save
 
 # =========================================
+# TRAINING LOGS (TensorBoard / SBI)
+# =========================================
+sbi-logs/
+*/sbi-logs/
+*.tfevents*
+
+# =========================================
 # PYTHON NOISE
 # =========================================
 __pycache__/
 *.pyc
 .DS_Store
+
+# =========================================
+# TEMP FILES
+# =========================================
+*.tmp
+temp_*
