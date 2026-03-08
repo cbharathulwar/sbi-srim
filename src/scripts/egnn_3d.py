@@ -64,6 +64,7 @@ BATCH_SIZE     = 128
 LEARNING_RATE  = 5e-4
 STOP_AFTER     = 30          # Early stopping patience (epochs)
 MAX_EPOCHS     = 200         # Hard cap — never train more than this
+MAX_TRAIN_TRACKS = 100_000   # Cap training set to fit in Colab RAM (~2.9 GB)
 # =================================================
 
 
@@ -161,15 +162,23 @@ def main():
             TRAIN_CSV, k_neighbors=K_NEIGHBORS
         )
 
-        # Quick mode: subsample
+        # Subsample to fit in memory (and quick mode)
+        n_total = len(x_padded)
         if args.quick:
-            n_use = min(args.n_quick, len(x_padded))
-            indices = torch.randperm(len(x_padded))[:n_use]
+            n_use = min(args.n_quick, n_total)
+        elif n_total > MAX_TRAIN_TRACKS:
+            n_use = MAX_TRAIN_TRACKS
+        else:
+            n_use = n_total
+
+        if n_use < n_total:
+            indices = torch.randperm(n_total)[:n_use]
             x_padded = x_padded[indices]
             mask = mask[indices]
             theta_train = theta_train[indices]
             knn_idx = knn_idx[indices]
-            print(f"[QUICK] Subsampled to {n_use} tracks")
+            print(f"[DATA] Subsampled {n_total:,} -> {n_use:,} tracks "
+                  f"({'quick mode' if args.quick else 'memory cap'})")
 
         # B. Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k) -> single flat tensor
         #    Memory-efficient: allocate x_flat directly, fill kNN in chunks
