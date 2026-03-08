@@ -262,16 +262,23 @@ def main():
             num_transforms=8,
         )
 
+        print("[DEBUG] Creating SNPE...", flush=True)
         inference = SNPE(prior=prior, density_estimator=density_estimator_build_fn,
                         device=device)
+        print("[DEBUG] SNPE created!", flush=True)
 
         # F. Append data & train (data_device="cpu" keeps x_flat in RAM,
         #    only individual batches get moved to GPU during training)
         # Skip SBI's z-scoring diagnostic (computes x.mean/x.std → OOMs on large data)
+        # Must patch on npe_base where it's imported, not on sbiutils
         import sbi.utils.sbiutils
+        import sbi.inference.trainers.npe.npe_base as _npe_base
         sbi.utils.sbiutils.warn_if_zscoring_changes_data = lambda x: None
+        _npe_base.warn_if_zscoring_changes_data = lambda x: None
 
+        print("[DEBUG] Calling append_simulations...", flush=True)
         inference.append_simulations(theta_train, x_flat, data_device="cpu")
+        print("[DEBUG] append_simulations done!", flush=True)
 
         n_batches = len(x_flat) // BATCH_SIZE
         max_ep = MAX_EPOCHS if not args.quick else 30
