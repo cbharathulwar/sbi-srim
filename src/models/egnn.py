@@ -569,40 +569,14 @@ class EGNNEmbedding(nn.Module):
                 coords, mask, k=self.k
             )
 
-        # --- Timing instrumentation (first 3 batches only) ---
-        import time as _time
-        _do_time = not hasattr(self, '_timing_count')
-        if _do_time:
-            self._timing_count = 0
-        self._timing_count += 1
-        _profile = self._timing_count <= 3
-
-        if _profile:
-            _t0 = _time.time()
-
         # Run EGNN backbone
         h_final, x_final = self.backbone(flat_coords, edge_index, real_counts, batch_vec)
-
-        if _profile:
-            _t1 = _time.time()
 
         # Dual-channel readout
         e_scalar = self.scalar_readout(h_final, batch_vec, real_counts)
         e_vector = self.vector_readout(h_final, x_final, batch_vec, real_counts)
 
-        if _profile:
-            _t2 = _time.time()
-
         # Fusion
         z = self.fusion(e_scalar, e_vector)
-
-        if _profile:
-            _t3 = _time.time()
-            n_edges = edge_index.shape[1]
-            n_points = flat_coords.shape[0]
-            print(f"[PROFILE batch {self._timing_count}] "
-                  f"points={n_points}, edges={n_edges} | "
-                  f"backbone={_t1-_t0:.3f}s, readout={_t2-_t1:.3f}s, "
-                  f"fusion={_t3-_t2:.3f}s, total={_t3-_t0:.3f}s")
 
         return z  # (B, d_latent)

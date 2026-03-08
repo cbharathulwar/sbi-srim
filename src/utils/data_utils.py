@@ -995,7 +995,7 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     Args:
         csv_path: path to CSV with columns [x, y, z, ion_number, energy_keV,
                   target_vx, target_vy, target_vz]
-        max_points: "auto" to use 99.5th percentile, or an integer
+        max_points: "auto" to use 95th percentile, or an integer
 
     Returns:
         x_padded: (N_tracks, N_max, 3) zero-padded, PCA-aligned coordinates
