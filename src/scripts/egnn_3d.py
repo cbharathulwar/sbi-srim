@@ -44,7 +44,7 @@ from sbi.neural_nets import posterior_nn
 BASE_DIR      = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 DATA_DIR      = BASE_DIR / "data/mcpe3d"
 TRAIN_CSV     = DATA_DIR / "mcpe_3d_train.csv"
-EVAL_CSV      = DATA_DIR / "mcpe_3d_eval_10k.csv"
+EVAL_CSV      = DATA_DIR / "mcpe_3d_eval.csv"
 RESULTS_DIR   = BASE_DIR / "results/egnn_3d"
 
 # Filenames
