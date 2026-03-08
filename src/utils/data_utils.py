@@ -1022,24 +1022,51 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
                 cached['n_max'], cached['knn_idx'])
 
     # --- No cache: run full preprocessing ---
+    # Only load columns we need (saves ~50% RAM on large CSVs)
+    use_cols = ['x', 'y', 'z', 'ion_number', 'energy_keV',
+                'target_vx', 'target_vy', 'target_vz']
     print(f"[EGNN] Loading data from: {csv_path}")
-    df = pd.read_csv(csv_path)
-    grouped = df.groupby('ion_number')
+    df = pd.read_csv(csv_path, usecols=use_cols)
+    print(f"[EGNN] Loaded {len(df):,} rows, {df.memory_usage(deep=True).sum() / 1e6:.0f} MB")
 
-    # Dynamic max_points
+    # Sort by ion_number for efficient groupby (avoids building hash table)
+    df.sort_values('ion_number', inplace=True)
+
+    # Compute track lengths for auto max_points BEFORE groupby iteration
     if max_points == "auto":
-        track_lengths = grouped.size()
+        track_lengths = df.groupby('ion_number').size()
         max_points = int(track_lengths.quantile(0.95))
         print(f"[EGNN] Track lengths -> Max: {track_lengths.max()}, "
-              f"95%: {max_points}")
+              f"95%: {max_points}, Tracks: {len(track_lengths):,}")
+        n_tracks_est = len(track_lengths)
+        del track_lengths
+    else:
+        n_tracks_est = df['ion_number'].nunique()
+
+    # Extract numpy arrays and free the DataFrame immediately
+    ion_ids = df['ion_number'].values
+    xyz = df[['x', 'y', 'z']].values.astype(np.float64)
+    energies = df['energy_keV'].values
+    vx = df['target_vx'].values
+    vy = df['target_vy'].values
+    vz = df['target_vz'].values
+    del df  # Free ~1 GB of RAM
+    import gc; gc.collect()
+    print(f"[EGNN] DataFrame freed, processing tracks via numpy...")
+
+    # Find track boundaries (data is sorted by ion_number)
+    boundaries = np.where(np.diff(ion_ids) != 0)[0] + 1
+    track_starts = np.concatenate([[0], boundaries])
+    track_ends = np.concatenate([boundaries, [len(ion_ids)]])
 
     coords_list = []
     theta_list = []
     lengths = []
 
-    for ion_idx, group in tqdm(grouped, desc="[EGNN] Processing tracks",
-                                total=len(grouped)):
-        points = group[['x', 'y', 'z']].values.astype(np.float64)
+    for t_idx in tqdm(range(len(track_starts)),
+                      desc="[EGNN] Processing tracks"):
+        s, e = track_starts[t_idx], track_ends[t_idx]
+        points = xyz[s:e]  # (n, 3) — no copy, just a view
 
         if len(points) < 3:
             continue  # Need at least 3 points for PCA
@@ -1049,7 +1076,6 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         centered = points - centroid
 
         # 2. PCA-align via SVD
-        # U, S, Vt = SVD(centered) -> Vt rows are principal axes
         try:
             _, _, Vt = np.linalg.svd(centered, full_matrices=False)
         except np.linalg.LinAlgError:
@@ -1070,17 +1096,17 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         coords_list.append(aligned.astype(np.float32))
         lengths.append(len(aligned))
 
-        # Extract ground truth
-        true_E = group['energy_keV'].iloc[0]
-        true_vx = group['target_vx'].iloc[0]
-        true_vy = group['target_vy'].iloc[0]
-        true_vz = group['target_vz'].iloc[0]
-        theta_list.append([true_E, true_vx, true_vy, true_vz])
+        # Extract ground truth (constant within a track, take first row)
+        theta_list.append([energies[s], vx[s], vy[s], vz[s]])
+
+    # Free the raw arrays
+    del ion_ids, xyz, energies, vx, vy, vz
+    gc.collect()
 
     # 4. Zero-pad to N_max, create mask, compute kNN neighbors
     N_tracks = len(coords_list)
     N_max = max(lengths)
-    print(f"[EGNN] {N_tracks} tracks, N_max = {N_max}")
+    print(f"[EGNN] {N_tracks:,} tracks, N_max = {N_max}")
 
     x_padded = np.zeros((N_tracks, N_max, 3), dtype=np.float32)
     mask = np.zeros((N_tracks, N_max), dtype=bool)
@@ -1100,6 +1126,10 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
             _, indices = tree.query(coords, k=k_use + 1)  # +1 for self
             neighbors = indices[:, 1:]  # (n, k_use) — skip self
             knn_idx[i, :n, :k_use] = neighbors
+
+    # Free coords_list before creating tensors
+    del coords_list
+    gc.collect()
 
     x_padded = torch.tensor(x_padded, dtype=torch.float32)
     mask = torch.tensor(mask, dtype=torch.bool)
