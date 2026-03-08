@@ -284,7 +284,25 @@ def main():
         inference.append_simulations(theta_train, x_flat, data_device="cpu")
         print("[DEBUG] append_simulations done!", flush=True)
 
-        n_batches = len(x_flat) // BATCH_SIZE
+        # Free our reference — SBI stores its own in _x_roundwise / _theta_roundwise
+        del x_flat, theta_train
+        import gc; gc.collect()
+
+        # Monkey-patch get_simulations to avoid torch.cat copy (saves 2.9 GB).
+        # With one round of data, torch.cat([x]) wastefully clones the full tensor.
+        _orig_get_sims = inference.get_simulations
+        def _efficient_get_sims(starting_round=0, exclude_invalid_x=True, warn_on_invalid=True):
+            # Call original but if we have exactly one round, return direct references
+            if starting_round == 0 and len(inference._x_roundwise) == 1:
+                return (inference._theta_roundwise[0],
+                        inference._x_roundwise[0],
+                        inference._prior_masks[0] if inference._prior_masks else torch.ones(
+                            len(inference._x_roundwise[0]), dtype=torch.bool))
+            return _orig_get_sims(starting_round, exclude_invalid_x, warn_on_invalid)
+        inference.get_simulations = _efficient_get_sims
+        print("[DEBUG] Patched get_simulations (avoids 2.9 GB copy)", flush=True)
+
+        n_batches = len(inference._x_roundwise[0]) // BATCH_SIZE
         max_ep = MAX_EPOCHS if not args.quick else 30
 
         print(f"\n[TRAIN] Starting end-to-end training (EGNN + NSF)...")
