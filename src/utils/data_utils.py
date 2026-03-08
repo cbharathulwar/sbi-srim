@@ -1018,8 +1018,12 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         cached = torch.load(cache_path, weights_only=False)
         print(f"[EGNN] Loaded {cached['x_padded'].shape[0]} tracks, "
               f"N_max={cached['n_max']}, k={k_neighbors}")
+        # knn_idx may be stored as int16 for disk efficiency; convert to long
+        knn = cached['knn_idx']
+        if knn.dtype != torch.long:
+            knn = knn.long()
         return (cached['x_padded'], cached['mask'], cached['theta'],
-                cached['n_max'], cached['knn_idx'])
+                cached['n_max'], knn)
 
     # --- No cache: run full preprocessing ---
     # Only load columns we need (saves ~50% RAM on large CSVs)
@@ -1059,17 +1063,41 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     track_starts = np.concatenate([[0], boundaries])
     track_ends = np.concatenate([boundaries, [len(ion_ids)]])
 
-    coords_list = []
-    theta_list = []
+    # --- Pass 1: compute lengths + theta to determine N_max ---
     lengths = []
+    theta_list = []
+    valid_track_indices = []  # indices into track_starts/track_ends
 
-    for t_idx in tqdm(range(len(track_starts)),
-                      desc="[EGNN] Processing tracks"):
+    for t_idx in range(len(track_starts)):
         s, e = track_starts[t_idx], track_ends[t_idx]
-        points = xyz[s:e]  # (n, 3) — no copy, just a view
+        n = e - s
+        if n < 3:
+            continue
+        valid_track_indices.append(t_idx)
+        lengths.append(min(n, max_points))
+        theta_list.append([energies[s], vx[s], vy[s], vz[s]])
 
-        if len(points) < 3:
-            continue  # Need at least 3 points for PCA
+    N_tracks = len(lengths)
+    N_max = max(lengths)
+    print(f"[EGNN] {N_tracks:,} valid tracks, N_max = {N_max}")
+
+    # --- Pre-allocate output arrays ---
+    # knn_idx uses int16 (max index = N_max = 381, int16 max = 32767) → 4x less RAM
+    x_padded = np.zeros((N_tracks, N_max, 3), dtype=np.float32)
+    mask = np.zeros((N_tracks, N_max), dtype=bool)
+    knn_idx = np.full((N_tracks, N_max, k_neighbors), -1, dtype=np.int16)
+
+    mem_mb = (x_padded.nbytes + mask.nbytes + knn_idx.nbytes) / 1e6
+    print(f"[EGNN] Output arrays allocated: {mem_mb:.0f} MB "
+          f"(x_padded: {x_padded.nbytes/1e6:.0f}, "
+          f"knn_idx: {knn_idx.nbytes/1e6:.0f})")
+
+    # --- Pass 2: PCA-align, normalize, build kNN — single loop, no intermediate list ---
+    for i, t_idx in tqdm(enumerate(valid_track_indices),
+                         desc="[EGNN] Processing + kNN",
+                         total=N_tracks):
+        s, e = track_starts[t_idx], track_ends[t_idx]
+        points = xyz[s:e]
 
         # 1. Center
         centroid = points.mean(axis=0)
@@ -1079,12 +1107,10 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         try:
             _, _, Vt = np.linalg.svd(centered, full_matrices=False)
         except np.linalg.LinAlgError:
-            continue  # Skip degenerate tracks
+            continue
+        aligned = centered @ Vt.T
 
-        # Rotate so principal axis = x, secondary = y, tertiary = z
-        aligned = centered @ Vt.T  # (N, 3)
-
-        # 3. Normalize by max spatial extent -> coords in ~[-1, 1]
+        # 3. Normalize by max spatial extent
         max_extent = np.abs(aligned).max()
         if max_extent > 0:
             aligned = aligned / max_extent
@@ -1093,55 +1119,38 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         if len(aligned) > max_points:
             aligned = aligned[:max_points]
 
-        coords_list.append(aligned.astype(np.float32))
-        lengths.append(len(aligned))
-
-        # Extract ground truth (constant within a track, take first row)
-        theta_list.append([energies[s], vx[s], vy[s], vz[s]])
-
-    # Free the raw arrays
-    del ion_ids, xyz, energies, vx, vy, vz
-    gc.collect()
-
-    # 4. Zero-pad to N_max, create mask, compute kNN neighbors
-    N_tracks = len(coords_list)
-    N_max = max(lengths)
-    print(f"[EGNN] {N_tracks:,} tracks, N_max = {N_max}")
-
-    x_padded = np.zeros((N_tracks, N_max, 3), dtype=np.float32)
-    mask = np.zeros((N_tracks, N_max), dtype=bool)
-    knn_idx = np.full((N_tracks, N_max, k_neighbors), -1, dtype=np.int64)
-
-    for i, coords in tqdm(enumerate(coords_list),
-                          desc="[EGNN] Building kNN graphs",
-                          total=N_tracks):
-        n = len(coords)
+        n = len(aligned)
+        coords = aligned.astype(np.float32)
         x_padded[i, :n, :] = coords
         mask[i, :n] = True
 
-        # Precompute kNN with scipy cKDTree (O(N log N), much faster than cdist)
+        # Precompute kNN with scipy cKDTree
         if n > 1:
             k_use = min(k_neighbors, n - 1)
             tree = cKDTree(coords)
-            _, indices = tree.query(coords, k=k_use + 1)  # +1 for self
-            neighbors = indices[:, 1:]  # (n, k_use) — skip self
-            knn_idx[i, :n, :k_use] = neighbors
+            _, indices = tree.query(coords, k=k_use + 1)
+            neighbors = indices[:, 1:]
+            knn_idx[i, :n, :k_use] = neighbors.astype(np.int16)
 
-    # Free coords_list before creating tensors
-    del coords_list
+    # Free raw arrays
+    del ion_ids, xyz, energies, vx, vy, vz, valid_track_indices
     gc.collect()
 
-    x_padded = torch.tensor(x_padded, dtype=torch.float32)
-    mask = torch.tensor(mask, dtype=torch.bool)
+    # Convert numpy → torch (keep knn_idx as int16 in cache for small file size)
+    x_padded = torch.from_numpy(x_padded)
+    mask = torch.from_numpy(mask)
     theta = torch.tensor(theta_list, dtype=torch.float32)
-    knn_idx = torch.tensor(knn_idx, dtype=torch.long)
+    knn_idx_i16 = torch.from_numpy(knn_idx)  # int16 tensor
 
     print(f"[EGNN] x_padded: {x_padded.shape}  mask: {mask.shape}  "
-          f"theta: {theta.shape}  knn_idx: {knn_idx.shape}")
+          f"theta: {theta.shape}  knn_idx: {knn_idx_i16.shape}")
 
-    # --- Save cache to disk ---
+    # --- Save cache to disk (int16 knn_idx → ~1.1 GB vs ~4.5 GB) ---
     torch.save({'x_padded': x_padded, 'mask': mask, 'theta': theta,
-                'n_max': N_max, 'knn_idx': knn_idx}, cache_path)
+                'n_max': N_max, 'knn_idx': knn_idx_i16}, cache_path)
     print(f"[EGNN] Cached preprocessed data -> {cache_path.name}")
 
-    return x_padded, mask, theta, N_max, knn_idx
+    # Convert knn_idx to long for downstream indexing
+    knn_idx_long = knn_idx_i16.long()
+    del knn_idx_i16
+    return x_padded, mask, theta, N_max, knn_idx_long
