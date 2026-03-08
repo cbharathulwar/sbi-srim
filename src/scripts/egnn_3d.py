@@ -180,6 +180,14 @@ def main():
             print(f"[DATA] Subsampled {n_total:,} -> {n_use:,} tracks "
                   f"({'quick mode' if args.quick else 'memory cap'})")
 
+        # Verify subsample covers parameter space evenly
+        labels = ['Energy', 'Vx', 'Vy', 'Vz']
+        print(f"[DATA] Parameter coverage after subsampling:")
+        for j, name in enumerate(labels):
+            col = theta_train[:, j]
+            print(f"        {name:8s}: min={col.min():.3f}  max={col.max():.3f}  "
+                  f"mean={col.mean():.3f}  std={col.std():.3f}")
+
         # B. Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k) -> single flat tensor
         #    Memory-efficient: allocate x_flat directly, fill kNN in chunks
         #    to avoid creating a full int64 or float32 copy of knn_idx
