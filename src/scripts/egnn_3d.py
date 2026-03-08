@@ -255,11 +255,15 @@ def main():
             print(f"        torch.compile: SKIPPED (GPU — not needed)")
 
         # E. Configure SNPE with NSF + EGNN embedding
+        # z_score_x="none": our EGNN already normalizes coords to [-1,1] and knn
+        # indices are integers — SBI's z-scoring would compute x.std(0) on the full
+        # 100k×7239 tensor, creating ~6 GB of temporaries and OOMing on Colab.
         density_estimator_build_fn = posterior_nn(
             model="nsf",
             embedding_net=embedding_net,
             hidden_features=128,
             num_transforms=8,
+            z_score_x="none",
         )
 
         print("[DEBUG] Creating SNPE...", flush=True)
