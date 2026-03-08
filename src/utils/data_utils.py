@@ -928,10 +928,10 @@ def load_and_pad_3d_tracks(csv_path, max_points="auto"):
     # --- DYNAMIC MAX POINTS CALCULATION ---
     if max_points == "auto":
         track_lengths = grouped.size()
-        # 99.5th percentile captures almost everything without memory blowouts
-        max_points = int(track_lengths.quantile(0.995))
+        # 95th percentile balances coverage vs memory/speed
+        max_points = int(track_lengths.quantile(0.95))
         absolute_max = track_lengths.max()
-        print(f"[DATA] Track lengths -> Max: {absolute_max}, 99.5%: {max_points}")
+        print(f"[DATA] Track lengths -> Max: {absolute_max}, 95%: {max_points}")
         print(f"[DATA] Auto-setting max_points to {max_points}")
     # --------------------------------------
 
@@ -973,3 +973,120 @@ def load_and_pad_3d_tracks(csv_path, max_points="auto"):
     print(f"[DATA] Final Theta shape: {theta_tensor.shape} -> [E, Vx, Vy, Vz]")
 
     return x_padded, theta_tensor
+
+
+# ============================================================
+# EGNN PREPROCESSING (Pipeline C)
+# ============================================================
+
+def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
+    """
+    Preprocess 3D tracks for EGNN Pipeline C.
+
+    Per track:
+      1. Center (subtract centroid)
+      2. PCA-align (SVD so principal axis = x-axis)
+      3. Normalize (divide by max spatial extent -> coords in [-1, 1])
+      4. Zero-pad to N_max, create boolean mask
+
+    CRITICAL: Do NOT flip/orient tracks by density.
+    The network must learn head-tail discrimination itself.
+
+    Args:
+        csv_path: path to CSV with columns [x, y, z, ion_number, energy_keV,
+                  target_vx, target_vy, target_vz]
+        max_points: "auto" to use 99.5th percentile, or an integer
+
+    Returns:
+        x_padded: (N_tracks, N_max, 3) zero-padded, PCA-aligned coordinates
+        mask:     (N_tracks, N_max) boolean mask (True = real point)
+        theta:    (N_tracks, 4) ground truth [E, Vx, Vy, Vz]
+        n_max:    int, the padding length (needed by EGNNEmbedding)
+        knn_idx:  (N_tracks, N_max, k) precomputed kNN neighbor indices (-1 = pad)
+    """
+    print(f"[EGNN] Loading data from: {csv_path}")
+    df = pd.read_csv(csv_path)
+    grouped = df.groupby('ion_number')
+
+    # Dynamic max_points
+    if max_points == "auto":
+        track_lengths = grouped.size()
+        max_points = int(track_lengths.quantile(0.95))
+        print(f"[EGNN] Track lengths -> Max: {track_lengths.max()}, "
+              f"95%: {max_points}")
+
+    coords_list = []
+    theta_list = []
+    lengths = []
+
+    for ion_idx, group in grouped:
+        points = group[['x', 'y', 'z']].values.astype(np.float64)
+
+        if len(points) < 3:
+            continue  # Need at least 3 points for PCA
+
+        # 1. Center
+        centroid = points.mean(axis=0)
+        centered = points - centroid
+
+        # 2. PCA-align via SVD
+        # U, S, Vt = SVD(centered) -> Vt rows are principal axes
+        try:
+            _, _, Vt = np.linalg.svd(centered, full_matrices=False)
+        except np.linalg.LinAlgError:
+            continue  # Skip degenerate tracks
+
+        # Rotate so principal axis = x, secondary = y, tertiary = z
+        aligned = centered @ Vt.T  # (N, 3)
+
+        # 3. Normalize by max spatial extent -> coords in ~[-1, 1]
+        max_extent = np.abs(aligned).max()
+        if max_extent > 0:
+            aligned = aligned / max_extent
+
+        # Truncate if too long
+        if len(aligned) > max_points:
+            aligned = aligned[:max_points]
+
+        coords_list.append(aligned.astype(np.float32))
+        lengths.append(len(aligned))
+
+        # Extract ground truth
+        true_E = group['energy_keV'].iloc[0]
+        true_vx = group['target_vx'].iloc[0]
+        true_vy = group['target_vy'].iloc[0]
+        true_vz = group['target_vz'].iloc[0]
+        theta_list.append([true_E, true_vx, true_vy, true_vz])
+
+    # 4. Zero-pad to N_max, create mask, compute kNN neighbors
+    N_tracks = len(coords_list)
+    N_max = max(lengths)
+    print(f"[EGNN] {N_tracks} tracks, N_max = {N_max}")
+
+    x_padded = np.zeros((N_tracks, N_max, 3), dtype=np.float32)
+    mask = np.zeros((N_tracks, N_max), dtype=bool)
+    knn_idx = np.full((N_tracks, N_max, k_neighbors), -1, dtype=np.int64)
+
+    print(f"[EGNN] Precomputing kNN (k={k_neighbors}) for all tracks...")
+    for i, coords in enumerate(coords_list):
+        n = len(coords)
+        x_padded[i, :n, :] = coords
+        mask[i, :n] = True
+
+        # Precompute kNN with scipy cKDTree (O(N log N), much faster than cdist)
+        if n > 1:
+            k_use = min(k_neighbors, n - 1)
+            tree = cKDTree(coords)
+            _, indices = tree.query(coords, k=k_use + 1)  # +1 for self
+            neighbors = indices[:, 1:]  # (n, k_use) — skip self
+            knn_idx[i, :n, :k_use] = neighbors
+
+    x_padded = torch.tensor(x_padded, dtype=torch.float32)
+    mask = torch.tensor(mask, dtype=torch.bool)
+    theta = torch.tensor(theta_list, dtype=torch.float32)
+    knn_idx = torch.tensor(knn_idx, dtype=torch.long)
+
+    print(f"[EGNN] x_padded: {x_padded.shape}  mask: {mask.shape}  "
+          f"theta: {theta.shape}  knn_idx: {knn_idx.shape}")
+
+    return x_padded, mask, theta, N_max, knn_idx
