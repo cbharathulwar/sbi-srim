@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 from scipy.spatial import cKDTree, ConvexHull, QhullError
+from tqdm import tqdm
 from scipy.stats import skew, kurtosis
 from sklearn.neighbors import NearestNeighbors
 from torch.nn.utils.rnn import pad_sequence
@@ -992,10 +993,14 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     CRITICAL: Do NOT flip/orient tracks by density.
     The network must learn head-tail discrimination itself.
 
+    Results are cached to disk as .egnn_cache.pt for instant reloading.
+    Cache auto-invalidates when k_neighbors or max_points change.
+
     Args:
         csv_path: path to CSV with columns [x, y, z, ion_number, energy_keV,
                   target_vx, target_vy, target_vz]
         max_points: "auto" to use 95th percentile, or an integer
+        k_neighbors: number of kNN neighbors to precompute
 
     Returns:
         x_padded: (N_tracks, N_max, 3) zero-padded, PCA-aligned coordinates
@@ -1004,6 +1009,19 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         n_max:    int, the padding length (needed by EGNNEmbedding)
         knn_idx:  (N_tracks, N_max, k) precomputed kNN neighbor indices (-1 = pad)
     """
+    csv_path = Path(csv_path)
+
+    # --- Check disk cache ---
+    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}.egnn_cache.pt"
+    if cache_path.exists():
+        print(f"[EGNN] Loading cached preprocessed data from {cache_path.name}")
+        cached = torch.load(cache_path, weights_only=False)
+        print(f"[EGNN] Loaded {cached['x_padded'].shape[0]} tracks, "
+              f"N_max={cached['n_max']}, k={k_neighbors}")
+        return (cached['x_padded'], cached['mask'], cached['theta'],
+                cached['n_max'], cached['knn_idx'])
+
+    # --- No cache: run full preprocessing ---
     print(f"[EGNN] Loading data from: {csv_path}")
     df = pd.read_csv(csv_path)
     grouped = df.groupby('ion_number')
@@ -1019,7 +1037,8 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     theta_list = []
     lengths = []
 
-    for ion_idx, group in grouped:
+    for ion_idx, group in tqdm(grouped, desc="[EGNN] Processing tracks",
+                                total=len(grouped)):
         points = group[['x', 'y', 'z']].values.astype(np.float64)
 
         if len(points) < 3:
@@ -1067,8 +1086,9 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     mask = np.zeros((N_tracks, N_max), dtype=bool)
     knn_idx = np.full((N_tracks, N_max, k_neighbors), -1, dtype=np.int64)
 
-    print(f"[EGNN] Precomputing kNN (k={k_neighbors}) for all tracks...")
-    for i, coords in enumerate(coords_list):
+    for i, coords in tqdm(enumerate(coords_list),
+                          desc="[EGNN] Building kNN graphs",
+                          total=N_tracks):
         n = len(coords)
         x_padded[i, :n, :] = coords
         mask[i, :n] = True
@@ -1088,5 +1108,10 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
 
     print(f"[EGNN] x_padded: {x_padded.shape}  mask: {mask.shape}  "
           f"theta: {theta.shape}  knn_idx: {knn_idx.shape}")
+
+    # --- Save cache to disk ---
+    torch.save({'x_padded': x_padded, 'mask': mask, 'theta': theta,
+                'n_max': N_max, 'knn_idx': knn_idx}, cache_path)
+    print(f"[EGNN] Cached preprocessed data -> {cache_path.name}")
 
     return x_padded, mask, theta, N_max, knn_idx
