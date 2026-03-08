@@ -199,10 +199,10 @@ def main():
         print(f"[DATA] N_max (padding):    {n_max}")
         print(f"[DATA] kNN precomputed:    k={K_NEIGHBORS} (embedded in x_flat)")
 
-        # C. Define Prior
-        prior_min = torch.tensor([0.0, -1.0, -1.0, -1.0])
-        prior_max = torch.tensor([105.0, 1.0, 1.0, 1.0])
-        prior = BoxUniform(low=prior_min, high=prior_max)
+        # C. Define Prior (must be on same device as training)
+        prior_min = torch.tensor([0.0, -1.0, -1.0, -1.0], device=device)
+        prior_max = torch.tensor([105.0, 1.0, 1.0, 1.0], device=device)
+        prior = BoxUniform(low=prior_min, high=prior_max, device=device)
 
         # D. Build EGNN embedding network
         print(f"[MODEL] Building EGNN embedding net:")
