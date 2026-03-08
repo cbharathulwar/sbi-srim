@@ -82,10 +82,15 @@ class ContinuousEvaluator3D:
             eval_csv_path, k_neighbors=k_neighbors
         )
 
-        # Flatten same as training: coords + knn_idx
-        coords_flat = x_padded.view(x_padded.shape[0], -1)
-        knn_flat = knn_idx.float().view(knn_idx.shape[0], -1)
-        features = torch.cat([coords_flat, knn_flat], dim=1)
+        # Flatten same as training: coords + knn_idx (memory-efficient chunked)
+        n_eval = x_padded.shape[0]
+        features = torch.empty(n_eval, n_max * (3 + k_neighbors), dtype=torch.float32)
+        features[:, :n_max * 3] = x_padded.view(n_eval, -1)
+        CHUNK = 10000
+        for s in range(0, n_eval, CHUNK):
+            e = min(s + CHUNK, n_eval)
+            features[s:e, n_max * 3:] = knn_idx[s:e].float().reshape(e - s, -1)
+        del x_padded, mask, knn_idx
 
         targets = targets_tensor.numpy()
         num_tracks = len(features)

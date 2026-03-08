@@ -1016,12 +1016,11 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     if cache_path.exists():
         print(f"[EGNN] Loading cached preprocessed data from {cache_path.name}")
         cached = torch.load(cache_path, weights_only=False)
-        print(f"[EGNN] Loaded {cached['x_padded'].shape[0]} tracks, "
-              f"N_max={cached['n_max']}, k={k_neighbors}")
-        # knn_idx may be stored as int16 for disk efficiency; convert to long
         knn = cached['knn_idx']
-        if knn.dtype != torch.long:
-            knn = knn.long()
+        print(f"[EGNN] Loaded {cached['x_padded'].shape[0]} tracks, "
+              f"N_max={cached['n_max']}, k={k_neighbors}, "
+              f"knn dtype={knn.dtype}")
+        # Keep knn_idx as int16 — converted to float32 during flattening
         return (cached['x_padded'], cached['mask'], cached['theta'],
                 cached['n_max'], knn)
 
@@ -1136,21 +1135,18 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     del ion_ids, xyz, energies, vx, vy, vz, valid_track_indices
     gc.collect()
 
-    # Convert numpy → torch (keep knn_idx as int16 in cache for small file size)
+    # Convert numpy → torch — knn_idx stays int16 to save ~7 GB RAM
     x_padded = torch.from_numpy(x_padded)
     mask = torch.from_numpy(mask)
     theta = torch.tensor(theta_list, dtype=torch.float32)
-    knn_idx_i16 = torch.from_numpy(knn_idx)  # int16 tensor
+    knn_idx = torch.from_numpy(knn_idx)  # int16, NOT converted to long
 
     print(f"[EGNN] x_padded: {x_padded.shape}  mask: {mask.shape}  "
-          f"theta: {theta.shape}  knn_idx: {knn_idx_i16.shape}")
+          f"theta: {theta.shape}  knn_idx: {knn_idx.shape} ({knn_idx.dtype})")
 
-    # --- Save cache to disk (int16 knn_idx → ~1.1 GB vs ~4.5 GB) ---
+    # Save cache to disk (int16 → ~1.1 GB file vs ~4.8 GB)
     torch.save({'x_padded': x_padded, 'mask': mask, 'theta': theta,
-                'n_max': N_max, 'knn_idx': knn_idx_i16}, cache_path)
+                'n_max': N_max, 'knn_idx': knn_idx}, cache_path)
     print(f"[EGNN] Cached preprocessed data -> {cache_path.name}")
 
-    # Convert knn_idx to long for downstream indexing
-    knn_idx_long = knn_idx_i16.long()
-    del knn_idx_i16
-    return x_padded, mask, theta, N_max, knn_idx_long
+    return x_padded, mask, theta, N_max, knn_idx

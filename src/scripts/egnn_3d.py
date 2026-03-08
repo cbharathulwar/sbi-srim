@@ -172,11 +172,29 @@ def main():
             print(f"[QUICK] Subsampled to {n_use} tracks")
 
         # B. Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k) -> single flat tensor
-        coords_flat = x_padded.view(x_padded.shape[0], -1)          # (N, N_max*3)
-        knn_flat = knn_idx.float().view(knn_idx.shape[0], -1)       # (N, N_max*k)
-        x_flat = torch.cat([coords_flat, knn_flat], dim=1)           # (N, N_max*(3+k))
+        #    Memory-efficient: allocate x_flat directly, fill kNN in chunks
+        #    to avoid creating a full int64 or float32 copy of knn_idx
+        n_tracks = x_padded.shape[0]
+        x_flat = torch.empty(n_tracks, n_max * (3 + K_NEIGHBORS), dtype=torch.float32)
 
+        # Copy coords (view, no extra memory)
+        x_flat[:, :n_max * 3] = x_padded.view(n_tracks, -1)
+        del x_padded  # free ~900 MB
+
+        # Copy knn_idx int16 → float32 in chunks (avoids 4.8 GB peak from .float())
+        CHUNK = 10000
+        for start in range(0, n_tracks, CHUNK):
+            end = min(start + CHUNK, n_tracks)
+            x_flat[start:end, n_max * 3:] = knn_idx[start:end].float().reshape(end - start, -1)
+        del knn_idx  # free ~2.4 GB (int16)
+        del mask      # free ~75 MB (not needed after flattening)
+        import gc; gc.collect()
+
+        import psutil, os
+        rss_gb = psutil.Process(os.getpid()).memory_info().rss / 1e9
         print(f"[DATA] Flattened X shape:  {x_flat.shape} -> (N_tracks, N_max*(3+k))")
+        print(f"[DATA] x_flat memory:      {x_flat.nbytes / 1e9:.2f} GB")
+        print(f"[DATA] Process RSS:        {rss_gb:.2f} GB")
         print(f"[DATA] Theta shape:        {theta_train.shape} -> [E, Vx, Vy, Vz]")
         print(f"[DATA] N_max (padding):    {n_max}")
         print(f"[DATA] kNN precomputed:    k={K_NEIGHBORS} (embedded in x_flat)")
@@ -208,12 +226,16 @@ def main():
         n_params = sum(p.numel() for p in embedding_net.parameters())
         print(f"        Parameters:  {n_params:,}")
 
-        # Compile for CPU optimization (fuses ops, optimizes scatter patterns)
-        try:
-            embedding_net = torch.compile(embedding_net, mode="reduce-overhead")
-            print(f"        torch.compile: ENABLED (reduce-overhead mode)")
-        except Exception as e:
-            print(f"        torch.compile: SKIPPED ({e})")
+        # torch.compile: skip on GPU (reduce-overhead pre-allocates too much VRAM
+        # for dynamic GNN shapes; default mode has high compile overhead)
+        if device == "cpu":
+            try:
+                embedding_net = torch.compile(embedding_net, mode="reduce-overhead")
+                print(f"        torch.compile: ENABLED (CPU, reduce-overhead)")
+            except Exception as e:
+                print(f"        torch.compile: SKIPPED ({e})")
+        else:
+            print(f"        torch.compile: SKIPPED (GPU — not needed)")
 
         # E. Configure SNPE with NSF + EGNN embedding
         density_estimator_build_fn = posterior_nn(
