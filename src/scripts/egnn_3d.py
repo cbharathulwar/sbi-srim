@@ -265,8 +265,12 @@ def main():
         inference = SNPE(prior=prior, density_estimator=density_estimator_build_fn,
                         device=device)
 
-        # F. Append data & train (data_device="cpu" keeps 5.7 GB x_flat in RAM,
+        # F. Append data & train (data_device="cpu" keeps x_flat in RAM,
         #    only individual batches get moved to GPU during training)
+        # Skip SBI's z-scoring diagnostic (computes x.mean/x.std → OOMs on large data)
+        import sbi.utils.sbiutils
+        sbi.utils.sbiutils.warn_if_zscoring_changes_data = lambda x: None
+
         inference.append_simulations(theta_train, x_flat, data_device="cpu")
 
         n_batches = len(x_flat) // BATCH_SIZE
