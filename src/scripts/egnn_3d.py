@@ -248,8 +248,9 @@ def main():
         inference = SNPE(prior=prior, density_estimator=density_estimator_build_fn,
                         device=device)
 
-        # F. Append data & train
-        inference.append_simulations(theta_train, x_flat)
+        # F. Append data & train (data_device="cpu" keeps 5.7 GB x_flat in RAM,
+        #    only individual batches get moved to GPU during training)
+        inference.append_simulations(theta_train, x_flat, data_device="cpu")
 
         n_batches = len(x_flat) // BATCH_SIZE
         max_ep = MAX_EPOCHS if not args.quick else 30
