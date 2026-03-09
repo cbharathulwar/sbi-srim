@@ -51,6 +51,7 @@ RESULTS_DIR   = BASE_DIR / "results/egnn_3d"
 POSTERIOR_FILE = RESULTS_DIR / "egnn_3d_posterior.pt"
 EVAL_RESULTS   = RESULTS_DIR / "egnn_3d_eval_results.csv"
 TRAIN_LOG      = RESULTS_DIR / "training_log.csv"
+CHECKPOINT_FILE = RESULTS_DIR / "checkpoint.pt"
 
 # Hyperparameters
 FORCE_RETRAIN  = False
@@ -60,7 +61,7 @@ K_NEIGHBORS    = 16
 N_HEADS        = 4
 D_PROJ         = 64
 D_LATENT       = 256
-BATCH_SIZE     = 128
+BATCH_SIZE     = 256
 LEARNING_RATE  = 5e-4
 STOP_AFTER     = 30          # Early stopping patience (epochs)
 MAX_EPOCHS     = 200         # Hard cap — never train more than this
@@ -68,18 +69,22 @@ MAX_TRAIN_TRACKS = 100_000   # Cap training set to fit in Colab RAM (~2.9 GB)
 # =================================================
 
 
-def attach_live_monitor(inference, tb_log_dir, csv_path):
+def attach_live_monitor(inference, tb_log_dir, csv_path, checkpoint_path=None,
+                        checkpoint_every=10):
     """
     Monkey-patch SBI's _maybe_show_progress to write TensorBoard + CSV
-    after EVERY epoch (SBI normally only writes after training completes).
+    after EVERY epoch, and save model checkpoints periodically.
 
     Args:
         inference: SNPE inference object (after append_simulations)
         tb_log_dir: directory for TensorBoard logs
         csv_path: path for CSV training log
+        checkpoint_path: path to save model checkpoints (None to disable)
+        checkpoint_every: save checkpoint every N epochs (also saves on best val loss)
     """
     writer = SummaryWriter(str(tb_log_dir))
     last_written = [0]  # mutable for closure
+    best_val_loss = [float('inf')]  # mutable for closure
     t_start = time()
 
     # Write CSV header
@@ -112,6 +117,24 @@ def attach_live_monitor(inference, tb_log_dir, csv_path):
             # Append to CSV
             with open(csv_path, 'a') as f:
                 f.write(f"{i},{tl:.6f},{vl:.6f},{dur:.1f},{elapsed:.1f}\n")
+
+            # Checkpoint saving (save full neural net for easy reload)
+            if checkpoint_path and inference._neural_net is not None:
+                is_best = vl < best_val_loss[0]
+                is_periodic = (i + 1) % checkpoint_every == 0
+
+                if is_best or is_periodic:
+                    if is_best:
+                        best_val_loss[0] = vl
+                    torch.save({
+                        'epoch': i,
+                        'neural_net': inference._neural_net,
+                        'best_val_loss': best_val_loss[0],
+                        'train_loss': tl,
+                    }, checkpoint_path)
+                    reason = "best" if is_best else f"periodic (every {checkpoint_every})"
+                    print(f"[CHECKPOINT] Saved at epoch {i} "
+                          f"(val_loss={vl:.4f}, {reason})", flush=True)
 
         last_written[0] = len(val_losses)
 
@@ -152,6 +175,31 @@ def main():
         posterior = torch.load(POSTERIOR_FILE, map_location="cpu")
         train_duration = 0.0
         n_max = posterior.net._neural_net.embedding_net.n_max
+    elif CHECKPOINT_FILE.exists() and not FORCE_RETRAIN and not args.quick:
+        # Fallback: rebuild posterior from crash-safe checkpoint
+        print(f"\n[STEP 1] No posterior found, but checkpoint exists!")
+        print(f"         Loading checkpoint -> {CHECKPOINT_FILE.name}")
+        ckpt = torch.load(CHECKPOINT_FILE, map_location="cpu")
+        print(f"         Checkpoint epoch: {ckpt['epoch']}, "
+              f"best_val_loss: {ckpt['best_val_loss']:.4f}")
+
+        # Rebuild prior (needed for build_posterior)
+        prior_min = torch.tensor([0.0, -1.0, -1.0, -1.0], device=device)
+        prior_max = torch.tensor([105.0, 1.0, 1.0, 1.0], device=device)
+        prior = BoxUniform(low=prior_min, high=prior_max, device=device)
+
+        # Create a minimal SNPE just to call build_posterior
+        inference = SNPE(prior=prior, device=device)
+        density_estimator = ckpt['neural_net']
+        posterior = inference.build_posterior(density_estimator, sample_with="direct")
+
+        # Save as full posterior so future runs load directly
+        torch.save(posterior, POSTERIOR_FILE)
+        print(f"[SAVE] Posterior rebuilt from checkpoint -> {POSTERIOR_FILE.name}")
+
+        train_duration = 0.0
+        n_max = density_estimator.embedding_net.n_max
+        del ckpt
     else:
         print("\n[STEP 1] Training New Posterior (EGNN + SNPE)...")
         t_train_start = time()
@@ -266,10 +314,8 @@ def main():
             z_score_x="none",
         )
 
-        print("[DEBUG] Creating SNPE...", flush=True)
         inference = SNPE(prior=prior, density_estimator=density_estimator_build_fn,
                         device=device)
-        print("[DEBUG] SNPE created!", flush=True)
 
         # F. Append data & train (data_device="cpu" keeps x_flat in RAM,
         #    only individual batches get moved to GPU during training)
@@ -280,9 +326,7 @@ def main():
         sbi.utils.sbiutils.warn_if_zscoring_changes_data = lambda x: None
         _npe_base.warn_if_zscoring_changes_data = lambda x: None
 
-        print("[DEBUG] Calling append_simulations...", flush=True)
         inference.append_simulations(theta_train, x_flat, data_device="cpu")
-        print("[DEBUG] append_simulations done!", flush=True)
 
         # Free our reference — SBI stores its own in _x_roundwise / _theta_roundwise
         del x_flat, theta_train
@@ -300,7 +344,6 @@ def main():
                             len(inference._x_roundwise[0]), dtype=torch.bool))
             return _orig_get_sims(starting_round, exclude_invalid_x, warn_on_invalid)
         inference.get_simulations = _efficient_get_sims
-        print("[DEBUG] Patched get_simulations (avoids 2.9 GB copy)", flush=True)
 
         n_batches = len(inference._x_roundwise[0]) // BATCH_SIZE
         max_ep = MAX_EPOCHS if not args.quick else 30
@@ -313,9 +356,11 @@ def main():
         print(f"        Batches/epoch: {n_batches}")
         print(f"        Started at:    {datetime.now().strftime('%H:%M:%S')}")
 
-        # Attach live monitor (TensorBoard + CSV updated every epoch)
+        # Attach live monitor (TensorBoard + CSV + checkpoints every 10 epochs)
         TB_LOG_DIR = RESULTS_DIR / "tb_logs"
-        tb_writer = attach_live_monitor(inference, TB_LOG_DIR, TRAIN_LOG)
+        tb_writer = attach_live_monitor(inference, TB_LOG_DIR, TRAIN_LOG,
+                                        checkpoint_path=CHECKPOINT_FILE,
+                                        checkpoint_every=10)
 
         print(f"\n[MONITOR] Live TensorBoard + CSV logging enabled!")
         print(f"[MONITOR] In another PowerShell window run:")
@@ -331,6 +376,7 @@ def main():
             stop_after_epochs=STOP_AFTER,
             max_num_epochs=max_ep,
             show_train_summary=True,
+            dataloader_kwargs={'pin_memory': True, 'num_workers': 2},
         )
 
         train_duration = (time() - t_train_start) / 60
