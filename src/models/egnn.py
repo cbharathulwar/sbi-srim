@@ -555,7 +555,10 @@ class EGNNEmbedding(nn.Module):
             coords = coords_flat.view(B, self.n_max, 3)
             neighbor_idx = nbr_flat.view(B, self.n_max, self.k).long()
 
-            mask = coords.abs().sum(dim=-1) > 1e-8  # (B, N_max)
+            # Mask: padding slots are exactly 0.0 in all 3 coords.
+            # Use exact-zero check so real points near the centroid aren't
+            # incorrectly masked out (the old threshold 1e-8 could do that).
+            mask = coords.abs().sum(dim=-1) > 0.0  # (B, N_max)
 
             edge_index, batch_vec, flat_coords, real_counts, _ = build_edges_precomputed(
                 coords, mask, neighbor_idx
@@ -563,7 +566,7 @@ class EGNNEmbedding(nn.Module):
         else:
             # --- SLOW PATH: compute kNN on the fly (for tests / backward compat) ---
             coords = x_flat.view(B, self.n_max, 3)
-            mask = coords.abs().sum(dim=-1) > 1e-8
+            mask = coords.abs().sum(dim=-1) > 0.0
 
             edge_index, batch_vec, flat_coords, real_counts, _ = build_knn_graph(
                 coords, mask, k=self.k
