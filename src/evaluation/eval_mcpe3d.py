@@ -76,6 +76,19 @@ class ContinuousEvaluator3D:
             eval_csv_path, k_neighbors=k_neighbors
         )
 
+        # Pad eval data to match model's n_max if needed
+        # (eval data may have fewer max points than training data)
+        if n_max < n_max_model:
+            print(f"[Eval] Padding eval data: n_max {n_max} -> {n_max_model} (to match model)")
+            pad_pts = n_max_model - n_max
+            n_eval_tmp = x_padded.shape[0]
+            x_padded = torch.cat([x_padded,
+                                  torch.zeros(n_eval_tmp, pad_pts, 3)], dim=1)
+            knn_idx = torch.cat([knn_idx,
+                                 torch.full((n_eval_tmp, pad_pts, k_neighbors), -1,
+                                            dtype=knn_idx.dtype)], dim=1)
+            n_max = n_max_model
+
         # Flatten same as training: coords + knn_idx (memory-efficient chunked)
         n_eval = x_padded.shape[0]
         features = torch.empty(n_eval, n_max * (3 + k_neighbors), dtype=torch.float32)
