@@ -1012,7 +1012,7 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     csv_path = Path(csv_path)
 
     # --- Check disk cache ---
-    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}.egnn_cache.pt"
+    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}_v2.egnn_cache.pt"
     if cache_path.exists():
         print(f"[EGNN] Loading cached preprocessed data from {cache_path.name}")
         cached = torch.load(cache_path, weights_only=False)
@@ -1091,35 +1091,32 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
           f"(x_padded: {x_padded.nbytes/1e6:.0f}, "
           f"knn_idx: {knn_idx.nbytes/1e6:.0f})")
 
-    # --- Pass 2: PCA-align, normalize, build kNN — single loop, no intermediate list ---
+    # --- Pass 2: center, normalize, build kNN — single loop, no intermediate list ---
+    # NOTE: No PCA alignment! The EGNN is E(n)-equivariant, so it handles
+    # arbitrary orientations naturally. PCA alignment would DESTROY the
+    # relationship between coordinates and direction targets (Vx, Vy, Vz),
+    # because targets are in the original lab frame.
     for i, t_idx in tqdm(enumerate(valid_track_indices),
                          desc="[EGNN] Processing + kNN",
                          total=N_tracks):
         s, e = track_starts[t_idx], track_ends[t_idx]
         points = xyz[s:e]
 
-        # 1. Center
+        # 1. Center (subtract centroid)
         centroid = points.mean(axis=0)
         centered = points - centroid
 
-        # 2. PCA-align via SVD
-        try:
-            _, _, Vt = np.linalg.svd(centered, full_matrices=False)
-        except np.linalg.LinAlgError:
-            continue
-        aligned = centered @ Vt.T
-
-        # 3. Normalize by max spatial extent
-        max_extent = np.abs(aligned).max()
+        # 2. Normalize by max spatial extent (coords in [-1, 1])
+        max_extent = np.abs(centered).max()
         if max_extent > 0:
-            aligned = aligned / max_extent
+            centered = centered / max_extent
 
         # Truncate if too long
-        if len(aligned) > max_points:
-            aligned = aligned[:max_points]
+        if len(centered) > max_points:
+            centered = centered[:max_points]
 
-        n = len(aligned)
-        coords = aligned.astype(np.float32)
+        n = len(centered)
+        coords = centered.astype(np.float32)
         x_padded[i, :n, :] = coords
         mask[i, :n] = True
 
