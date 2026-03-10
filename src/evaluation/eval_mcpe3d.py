@@ -68,15 +68,9 @@ class ContinuousEvaluator3D:
         print(f"[Eval] Loading & preprocessing from {eval_csv_path}...")
 
         # Get k from the posterior's embedding network
-        try:
-            emb_net = self.posterior.posterior_estimator._neural_net.embedding_net
-            k_neighbors = emb_net.k
-            n_max_model = emb_net.n_max
-        except AttributeError:
-            # Fallback for older posteriors
-            emb_net = self.posterior.net._neural_net.embedding_net
-            k_neighbors = emb_net.k
-            n_max_model = emb_net.n_max
+        emb_net = self.posterior.posterior_estimator.embedding_net
+        k_neighbors = emb_net.k
+        n_max_model = emb_net.n_max
 
         x_padded, mask, targets_tensor, n_max, knn_idx = preprocess_egnn(
             eval_csv_path, k_neighbors=k_neighbors

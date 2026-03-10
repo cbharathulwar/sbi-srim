@@ -174,7 +174,7 @@ def main():
         print(f"\n[STEP 1] Loading existing posterior -> {POSTERIOR_FILE.name}")
         posterior = torch.load(POSTERIOR_FILE, map_location="cpu")
         train_duration = 0.0
-        n_max = posterior.net._neural_net.embedding_net.n_max
+        n_max = posterior.posterior_estimator.embedding_net.n_max
     elif CHECKPOINT_FILE.exists() and not FORCE_RETRAIN and not args.quick:
         # Fallback: rebuild posterior from crash-safe checkpoint
         print(f"\n[STEP 1] No posterior found, but checkpoint exists!")
