@@ -252,6 +252,9 @@ class EGNNLayer(nn.Module):
             nn.Linear(d_h, d_h),
         )
 
+        # LayerNorm after residual connection (stabilizes gradient flow)
+        self.layer_norm = nn.LayerNorm(d_h)
+
     def forward(self, h, x, edge_index):
         """
         Args:
@@ -292,9 +295,173 @@ class EGNNLayer(nn.Module):
         agg_m.scatter_add_(0, dst.unsqueeze(-1).expand_as(m_ij), m_ij)
 
         node_input = torch.cat([h, agg_m], dim=-1)  # (N, 2*d_h)
-        h_new = self.phi_h(node_input) + h           # Residual connection
+        h_new = self.layer_norm(self.phi_h(node_input) + h)  # Residual + LayerNorm
 
         return h_new, x_new
+
+
+# ============================================================
+# GVP-Enhanced EGNN Layer (adds directional vector features)
+# ============================================================
+
+class GVPEGNNLayer(nn.Module):
+    """
+    GVP-enhanced EGNN layer that adds equivariant direction vectors
+    to the message passing, giving the model access to angular structure.
+
+    Key additions over EGNNLayer:
+      - Edge direction vectors dir_ij = (x_j - x_i) / ||x_j - x_i||
+      - Scalar-gated vector expansion to v_dim channels
+      - Aggregated vector norms as extra scalar features in node update
+    """
+
+    def __init__(self, hidden_dim, v_dim=8):
+        super().__init__()
+        d_h = hidden_dim
+        self.v_dim = v_dim
+
+        # Edge MLP: phi_e([h_i, h_j, d_ij², ||gated_vectors||]) -> message
+        # Extra v_dim scalars from gated direction vector norms
+        self.phi_e = nn.Sequential(
+            nn.Linear(2 * d_h + 1 + v_dim, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # Coord MLP: phi_x(message) -> scalar weight for position update
+        self.phi_x = nn.Sequential(
+            nn.Linear(d_h, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, 1),
+        )
+
+        # Node MLP: phi_h([h_i, agg_messages, ||agg_vectors||]) -> updated features
+        # Extra v_dim scalars from aggregated vector norms
+        self.phi_h = nn.Sequential(
+            nn.Linear(2 * d_h + v_dim, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # GVP: scalar-dependent gating for vector expansion
+        # Maps edge scalar features -> v_dim gate values
+        self.vector_gate = nn.Sequential(
+            nn.Linear(2 * d_h + 1, v_dim),
+            nn.Sigmoid(),
+        )
+
+        # LayerNorm after residual
+        self.layer_norm = nn.LayerNorm(d_h)
+
+    def forward(self, h, x, edge_index):
+        """
+        Args:
+            h: (N, d_h) scalar node features
+            x: (N, 3)   node positions
+            edge_index: (2, E) graph edges [sources, destinations]
+
+        Returns:
+            h_new: (N, d_h) updated scalar features
+            x_new: (N, 3)   updated positions
+        """
+        src, dst = edge_index
+        N = h.shape[0]
+
+        # 1. Compute edge geometry
+        x_diff = x[src] - x[dst]                                  # (E, 3)
+        d_ij_sq = x_diff.pow(2).sum(dim=-1, keepdim=True)         # (E, 1)
+        d_ij = d_ij_sq.sqrt().clamp(min=1e-8)                     # (E, 1)
+        dir_ij = x_diff / d_ij                                     # (E, 3) unit vectors
+
+        # 2. GVP: scalar-gated vector expansion
+        # Gate depends on scalar node features + distance (rotation-invariant)
+        gate_input = torch.cat([h[src], h[dst], d_ij_sq], dim=-1)  # (E, 2*d_h+1)
+        gate = self.vector_gate(gate_input)                         # (E, v_dim)
+
+        # Expand dir_ij to v_dim channels, gated by scalar features
+        # dir_ij: (E, 3), gate: (E, v_dim) -> vectors: (E, v_dim, 3)
+        vectors = dir_ij.unsqueeze(1) * gate.unsqueeze(2)          # (E, v_dim, 3)
+
+        # Rotation-invariant scalar: norms of each vector channel
+        vec_norms = vectors.norm(dim=-1)                            # (E, v_dim)
+
+        # 3. Edge messages with GVP scalar features
+        edge_input = torch.cat([h[src], h[dst], d_ij_sq, vec_norms], dim=-1)
+        m_ij = self.phi_e(edge_input)                               # (E, d_h)
+
+        # 4. Position update (same as EGNN — equivariant)
+        w_ij = torch.tanh(self.phi_x(m_ij))                        # (E, 1)
+        weighted_diff = w_ij * x_diff                               # (E, 3)
+
+        agg_x = torch.zeros(N, 3, device=x.device, dtype=x.dtype)
+        agg_x.scatter_add_(0, dst.unsqueeze(-1).expand_as(weighted_diff), weighted_diff)
+
+        degree = torch.zeros(N, 1, device=x.device, dtype=x.dtype)
+        degree.scatter_add_(0, dst.unsqueeze(-1), torch.ones(src.shape[0], 1, device=x.device))
+        degree = degree.clamp(min=1)
+
+        x_new = x + agg_x / degree
+
+        # 5. Aggregate vector messages per node -> compute norms
+        # vectors: (E, v_dim, 3) -> aggregate per destination node
+        vectors_flat = vectors.view(-1, self.v_dim * 3)  # (E, v_dim*3)
+        agg_v = torch.zeros(N, self.v_dim * 3, device=h.device, dtype=h.dtype)
+        agg_v.scatter_add_(0, dst.unsqueeze(-1).expand_as(vectors_flat), vectors_flat)
+        agg_v = agg_v.view(N, self.v_dim, 3)             # (N, v_dim, 3)
+        agg_v_norms = agg_v.norm(dim=-1)                  # (N, v_dim) — directional coherence
+
+        # 6. Scalar feature update with GVP vector norms
+        agg_m = torch.zeros(N, m_ij.shape[1], device=h.device, dtype=h.dtype)
+        agg_m.scatter_add_(0, dst.unsqueeze(-1).expand_as(m_ij), m_ij)
+
+        node_input = torch.cat([h, agg_m, agg_v_norms], dim=-1)
+        h_new = self.layer_norm(self.phi_h(node_input) + h)
+
+        return h_new, x_new
+
+
+# ============================================================
+# Auxiliary Prediction Heads (for unified training)
+# ============================================================
+
+class DirectionHead(nn.Module):
+    """
+    Predicts direction (unit vector on S²) and concentration (kappa)
+    from the latent embedding z, for vMF auxiliary loss.
+    """
+
+    def __init__(self, d_latent=384):
+        super().__init__()
+        self.mu_net = nn.Sequential(
+            nn.Linear(d_latent, 128), nn.SiLU(), nn.Linear(128, 3)
+        )
+        self.kappa_net = nn.Sequential(
+            nn.Linear(d_latent, 64), nn.SiLU(), nn.Linear(64, 1)
+        )
+
+    def forward(self, z):
+        mu_hat = F.normalize(self.mu_net(z), dim=-1)      # unit vector on S²
+        kappa = F.softplus(self.kappa_net(z)) + 1.0        # concentration > 1
+        return mu_hat, kappa
+
+
+class EnergyHead(nn.Module):
+    """
+    Predicts energy and log-uncertainty from the latent embedding z,
+    for heteroscedastic Gaussian auxiliary loss.
+    """
+
+    def __init__(self, d_latent=384):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(d_latent, 64), nn.SiLU(), nn.Linear(64, 2)
+        )
+
+    def forward(self, z):
+        out = self.net(z)
+        E_pred = F.softplus(out[:, 0])     # energy > 0
+        log_sigma = out[:, 1]               # log uncertainty
+        return E_pred, log_sigma
 
 
 # ============================================================
@@ -306,20 +473,27 @@ class EGNNBackbone(nn.Module):
     Stack of EGNN layers with shared kNN graph.
 
     Initializes scalar features h to 1 for real points, 0 for padding.
+    Supports both original EGNNLayer and GVP-enhanced GVPEGNNLayer.
     """
 
-    def __init__(self, hidden_dim=64, n_layers=4):
+    def __init__(self, hidden_dim=64, n_layers=4, use_gvp=False, v_dim=8):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.n_layers = n_layers
+        self.use_gvp = use_gvp
 
         # Initial feature projection (from 1-dim indicator to hidden_dim)
         self.h_init = nn.Linear(1, hidden_dim)
 
-        # EGNN layers
-        self.layers = nn.ModuleList([
-            EGNNLayer(hidden_dim) for _ in range(n_layers)
-        ])
+        # EGNN layers (original or GVP-enhanced)
+        if use_gvp:
+            self.layers = nn.ModuleList([
+                GVPEGNNLayer(hidden_dim, v_dim=v_dim) for _ in range(n_layers)
+            ])
+        else:
+            self.layers = nn.ModuleList([
+                EGNNLayer(hidden_dim) for _ in range(n_layers)
+            ])
 
     def forward(self, flat_coords, edge_index, real_counts, batch_vec):
         """
@@ -396,7 +570,7 @@ class VectorReadout(nn.Module):
     projected to higher dimension.
     """
 
-    def __init__(self, hidden_dim, n_heads=4, d_proj=64):
+    def __init__(self, hidden_dim, n_heads=8, d_proj=32):
         super().__init__()
         self.n_heads = n_heads
         self.d_proj = d_proj
@@ -474,6 +648,7 @@ class FusionMLP(nn.Module):
             nn.Linear(total_dim, 512),
             nn.LayerNorm(512),
             nn.SiLU(),
+            nn.Dropout(0.1),
             nn.Linear(512, d_latent),
         )
 
@@ -510,16 +685,21 @@ class EGNNEmbedding(nn.Module):
         hidden_dim=64,
         n_layers=4,
         k=16,
-        n_heads=4,
-        d_proj=64,
+        n_heads=8,
+        d_proj=32,
         d_latent=256,
+        use_gvp=False,
+        v_dim=8,
     ):
         super().__init__()
         self.n_max = n_max
         self.k = k
 
-        # Backbone
-        self.backbone = EGNNBackbone(hidden_dim=hidden_dim, n_layers=n_layers)
+        # Backbone (original or GVP-enhanced)
+        self.backbone = EGNNBackbone(
+            hidden_dim=hidden_dim, n_layers=n_layers,
+            use_gvp=use_gvp, v_dim=v_dim
+        )
 
         # Readout
         self.scalar_readout = ScalarReadout(hidden_dim)
@@ -583,3 +763,31 @@ class EGNNEmbedding(nn.Module):
         z = self.fusion(e_scalar, e_vector)
 
         return z  # (B, d_latent)
+
+
+# ============================================================
+# Cached Embedding Wrapper (for unified training with aux heads)
+# ============================================================
+
+class CachedEGNNEmbedding(nn.Module):
+    """
+    Wrapper around EGNNEmbedding that caches the last embedding z.
+
+    When SBI's flow calls forward(x), it runs the EGNN and stores z.
+    The training loop can then grab cached_embedding.last_z to feed
+    the auxiliary heads without recomputing the forward pass.
+    """
+
+    def __init__(self, embedding: EGNNEmbedding):
+        super().__init__()
+        self.embedding = embedding
+        self.last_z = None
+
+        # Expose attributes that SBI/flow might need
+        self.n_max = embedding.n_max
+        self.k = embedding.k
+
+    def forward(self, x_flat):
+        z = self.embedding(x_flat)
+        self.last_z = z
+        return z

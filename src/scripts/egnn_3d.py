@@ -58,22 +58,27 @@ FORCE_RETRAIN  = False
 HIDDEN_DIM     = 64
 N_LAYERS       = 4
 K_NEIGHBORS    = 16
-N_HEADS        = 4
-D_PROJ         = 64
+N_HEADS        = 8
+D_PROJ         = 32
 D_LATENT       = 256
+NUM_TRANSFORMS = 12          # NSF coupling layers (was 8)
 BATCH_SIZE     = 256
 LEARNING_RATE  = 5e-4
-STOP_AFTER     = 30          # Early stopping patience (epochs)
-MAX_EPOCHS     = 200         # Hard cap — never train more than this
+LR_MIN         = 1e-5        # Cosine schedule decays to this
+WEIGHT_DECAY   = 1e-5        # L2 regularization
+STOP_AFTER     = 40          # Early stopping patience (epochs, was 30)
+MAX_EPOCHS     = 250         # Hard cap (was 200)
 MAX_TRAIN_TRACKS = 100_000   # Cap training set to fit in Colab RAM (~2.9 GB)
 # =================================================
 
 
 def attach_live_monitor(inference, tb_log_dir, csv_path, checkpoint_path=None,
-                        checkpoint_every=10):
+                        checkpoint_every=10, max_epochs=250,
+                        lr_max=5e-4, lr_min=1e-5, weight_decay=1e-5):
     """
     Monkey-patch SBI's _maybe_show_progress to write TensorBoard + CSV
-    after EVERY epoch, and save model checkpoints periodically.
+    after EVERY epoch, save model checkpoints, apply cosine LR schedule,
+    and inject weight decay.
 
     Args:
         inference: SNPE inference object (after append_simulations)
@@ -81,22 +86,36 @@ def attach_live_monitor(inference, tb_log_dir, csv_path, checkpoint_path=None,
         csv_path: path for CSV training log
         checkpoint_path: path to save model checkpoints (None to disable)
         checkpoint_every: save checkpoint every N epochs (also saves on best val loss)
+        max_epochs: total epochs for cosine LR schedule
+        lr_max: starting learning rate
+        lr_min: minimum learning rate (cosine schedule floor)
+        weight_decay: L2 regularization strength
     """
+    import math
+
     writer = SummaryWriter(str(tb_log_dir))
     last_written = [0]  # mutable for closure
     best_val_loss = [float('inf')]  # mutable for closure
+    optimizer_patched = [False]  # one-time weight decay injection
     t_start = time()
 
     # Write CSV header
     Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
     with open(csv_path, 'w') as f:
-        f.write("epoch,train_loss,val_loss,epoch_duration_sec,elapsed_min\n")
+        f.write("epoch,train_loss,val_loss,learning_rate,epoch_duration_sec,elapsed_min\n")
 
     # Save original method
     original_show_progress = inference._maybe_show_progress
 
     def patched_show_progress(show, epoch):
         original_show_progress(show, epoch)
+
+        # One-time: inject weight decay into optimizer param groups
+        if not optimizer_patched[0] and hasattr(inference, 'optimizer'):
+            for group in inference.optimizer.param_groups:
+                group['weight_decay'] = weight_decay
+            optimizer_patched[0] = True
+            print(f"[OPT] Injected weight_decay={weight_decay}", flush=True)
 
         # Write any new epoch data to TensorBoard + CSV
         val_losses = inference._summary.get("validation_loss", [])
@@ -109,14 +128,22 @@ def attach_live_monitor(inference, tb_log_dir, csv_path, checkpoint_path=None,
             tl = train_losses[i] if i < len(train_losses) else 0
             dur = durations[i] if i < len(durations) else 0
 
+            # Cosine LR schedule: decay from lr_max to lr_min
+            progress = i / max(max_epochs - 1, 1)
+            new_lr = lr_min + 0.5 * (lr_max - lr_min) * (1 + math.cos(math.pi * progress))
+            if hasattr(inference, 'optimizer'):
+                for group in inference.optimizer.param_groups:
+                    group['lr'] = new_lr
+
             writer.add_scalar("validation_loss", vl, i)
             writer.add_scalar("training_loss", tl, i)
+            writer.add_scalar("learning_rate", new_lr, i)
             writer.add_scalar("epoch_duration_sec", dur, i)
             writer.flush()
 
-            # Append to CSV
+            # Append to CSV (now includes LR)
             with open(csv_path, 'a') as f:
-                f.write(f"{i},{tl:.6f},{vl:.6f},{dur:.1f},{elapsed:.1f}\n")
+                f.write(f"{i},{tl:.6f},{vl:.6f},{new_lr:.6f},{dur:.1f},{elapsed:.1f}\n")
 
             # Checkpoint saving (save full neural net for easy reload)
             if checkpoint_path and inference._neural_net is not None:
@@ -134,7 +161,7 @@ def attach_live_monitor(inference, tb_log_dir, csv_path, checkpoint_path=None,
                     }, checkpoint_path)
                     reason = "best" if is_best else f"periodic (every {checkpoint_every})"
                     print(f"[CHECKPOINT] Saved at epoch {i} "
-                          f"(val_loss={vl:.4f}, {reason})", flush=True)
+                          f"(val_loss={vl:.4f}, lr={new_lr:.6f}, {reason})", flush=True)
 
         last_written[0] = len(val_losses)
 
@@ -274,8 +301,9 @@ def main():
         print(f"        Hidden dim:  {HIDDEN_DIM}")
         print(f"        Layers:      {N_LAYERS}")
         print(f"        k neighbors: {K_NEIGHBORS}")
-        print(f"        Attn heads:  {N_HEADS}")
+        print(f"        Attn heads:  {N_HEADS} x {D_PROJ}d")
         print(f"        d_latent:    {D_LATENT}")
+        print(f"        NSF transforms: {NUM_TRANSFORMS}")
 
         embedding_net = EGNNEmbedding(
             n_max=n_max,
@@ -310,7 +338,7 @@ def main():
             model="nsf",
             embedding_net=embedding_net,
             hidden_features=128,
-            num_transforms=8,
+            num_transforms=NUM_TRANSFORMS,
             z_score_x="none",
         )
 
@@ -350,17 +378,23 @@ def main():
 
         print(f"\n[TRAIN] Starting end-to-end training (EGNN + NSF)...")
         print(f"        Batch size:    {BATCH_SIZE}")
-        print(f"        Learning rate: {LEARNING_RATE}")
+        print(f"        Learning rate: {LEARNING_RATE} -> {LR_MIN} (cosine)")
+        print(f"        Weight decay:  {WEIGHT_DECAY}")
+        print(f"        NSF transforms:{NUM_TRANSFORMS}")
         print(f"        Patience:      {STOP_AFTER} epochs")
         print(f"        Max epochs:    {max_ep}")
         print(f"        Batches/epoch: {n_batches}")
         print(f"        Started at:    {datetime.now().strftime('%H:%M:%S')}")
 
-        # Attach live monitor (TensorBoard + CSV + checkpoints every 10 epochs)
+        # Attach live monitor (TensorBoard + CSV + checkpoints + cosine LR + weight decay)
         TB_LOG_DIR = RESULTS_DIR / "tb_logs"
         tb_writer = attach_live_monitor(inference, TB_LOG_DIR, TRAIN_LOG,
                                         checkpoint_path=CHECKPOINT_FILE,
-                                        checkpoint_every=10)
+                                        checkpoint_every=10,
+                                        max_epochs=max_ep,
+                                        lr_max=LEARNING_RATE,
+                                        lr_min=LR_MIN,
+                                        weight_decay=WEIGHT_DECAY)
 
         print(f"\n[MONITOR] Live TensorBoard + CSV logging enabled!")
         print(f"[MONITOR] In another PowerShell window run:")
