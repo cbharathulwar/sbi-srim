@@ -146,7 +146,7 @@ def build_flow(embedding_net, n_max, k, d_latent, device):
     return flow, cached_embedding
 
 
-def prepare_data(args):
+def prepare_data(args, batch_size=BATCH_SIZE):
     """Load and preprocess training data, return dataloaders."""
     print("[DATA] Preprocessing training data (EGNN pipeline)...")
     x_padded, mask, theta_train, n_max, knn_idx = preprocess_egnn(
@@ -209,11 +209,11 @@ def prepare_data(args):
 
     # DataLoaders — pin_memory for GPU, but keep data on CPU
     train_loader = DataLoader(
-        train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+        train_dataset, batch_size=batch_size, shuffle=True,
         pin_memory=True, num_workers=0, drop_last=True,
     )
     val_loader = DataLoader(
-        val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+        val_dataset, batch_size=batch_size, shuffle=False,
         pin_memory=True, num_workers=0,
     )
 
@@ -372,7 +372,6 @@ def main():
     if args.max_epochs is None:
         args.max_epochs = 5 if args.smoke else MAX_EPOCHS
 
-    batch_size = args.batch_size
     max_epochs = args.max_epochs
 
     t_start = time()
@@ -389,13 +388,29 @@ def main():
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     device = get_device()
     print(f"  DEVICE: {device}")
+
+    # Auto-detect batch size based on GPU VRAM
+    # GVP layers use more memory per edge than vanilla EGNN
+    batch_size = args.batch_size
     if device == "cuda":
-        print(f"  GPU: {torch.cuda.get_device_name()}")
-        print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        gpu_name = torch.cuda.get_device_name()
+        print(f"  GPU: {gpu_name}")
+        print(f"  VRAM: {vram_gb:.1f} GB")
+
+        # Auto-adjust batch size if user didn't override
+        if args.batch_size == BATCH_SIZE:  # user didn't explicitly set it
+            if vram_gb < 20:       # T4 (15GB) or similar
+                batch_size = 64
+            elif vram_gb < 45:     # A100-40GB
+                batch_size = 256
+            else:                   # A100-80GB
+                batch_size = 512
+            print(f"  Auto batch size: {batch_size} (based on {vram_gb:.0f}GB VRAM)")
 
     # 1. Load data
     print(f"\n[STEP 1] Loading and preprocessing data...")
-    train_loader, val_loader, n_max = prepare_data(args)
+    train_loader, val_loader, n_max = prepare_data(args, batch_size=batch_size)
 
     # 2. Build model components
     print(f"\n[STEP 2] Building GVP-EGNN + NSF flow...")
