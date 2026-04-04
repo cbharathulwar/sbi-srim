@@ -436,11 +436,11 @@ def main():
         # Auto-adjust batch size if user didn't override
         if args.batch_size == BATCH_SIZE:  # user didn't explicitly set it
             if vram_gb < 20:       # T4 (15GB) or similar
-                batch_size = 64
+                batch_size = 32
             elif vram_gb < 45:     # A100-40GB
-                batch_size = 256
+                batch_size = 128
             else:                   # A100-80GB
-                batch_size = 512
+                batch_size = 256
             print(f"  Auto batch size: {batch_size} (based on {vram_gb:.0f}GB VRAM)")
 
     # 1. Load data
