@@ -304,6 +304,15 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
         energy_loss_sum += energy_loss.item()
         n_batches += 1
 
+    if n_batches == 0:
+        print(f"  [WARN] ALL batches produced NaN in epoch {epoch}! "
+              f"Returning inf losses.")
+        return {
+            'total': float('inf'), 'flow': float('inf'),
+            'direction': float('inf'), 'energy': float('inf'),
+            'alpha': alpha, 'beta': beta,
+        }
+
     return {
         'total': total_loss_sum / n_batches,
         'flow': flow_loss_sum / n_batches,
@@ -350,6 +359,10 @@ def validate(flow, cached_embedding, dir_head, energy_head,
         energy_loss = e_nll.mean()
 
         total_loss = flow_loss + alpha * dir_loss + beta * energy_loss
+
+        # NaN guard: skip bad batches in validation too
+        if not torch.isfinite(total_loss):
+            continue
 
         total_loss_sum += total_loss.item()
         flow_loss_sum += flow_loss.item()
@@ -807,13 +820,13 @@ def main():
                     print(f"  Median Energy sigma:      {med_E_std:.2f} keV")
                 if 'angular_cone_68' in df_eval.columns:
                     med_cone68 = df_eval["angular_cone_68"].median()
-                    print(f"  Median 68%% Cone:         {med_cone68:.2f} deg")
+                    print(f"  Median 68% Cone:          {med_cone68:.2f} deg")
                 if 'angular_cone_90' in df_eval.columns:
                     med_cone90 = df_eval["angular_cone_90"].median()
-                    print(f"  Median 90%% Cone:         {med_cone90:.2f} deg")
+                    print(f"  Median 90% Cone:          {med_cone90:.2f} deg")
                 if 'energy_ci90_width' in df_eval.columns:
                     med_ci90 = df_eval["energy_ci90_width"].median()
-                    print(f"  Median Energy 90%% CI:    {med_ci90:.2f} keV")
+                    print(f"  Median Energy 90% CI:     {med_ci90:.2f} keV")
 
                 # Angular error percentiles
                 p25 = df_eval["angular_error_deg"].quantile(0.25)
