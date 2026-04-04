@@ -86,10 +86,15 @@ GRAD_CLIP      = 1.0
 MAX_TRAIN_TRACKS = 100_000
 
 # Auxiliary loss weights (decay schedule)
-ALPHA_START    = 1.0      # vMF direction loss weight (start)
-ALPHA_END      = 0.1      # vMF direction loss weight (end)
-BETA_START     = 0.5      # Gaussian energy loss weight (start)
-BETA_END       = 0.05     # Gaussian energy loss weight (end)
+# NOTE: energy loss is O(1000) at init (sigma~1, residuals~50),
+# so beta must be small to avoid destabilizing the NSF flow.
+ALPHA_START    = 0.5      # vMF direction loss weight (start)
+ALPHA_END      = 0.05     # vMF direction loss weight (end)
+BETA_START     = 0.01     # Gaussian energy loss weight (start)
+BETA_END       = 0.001    # Gaussian energy loss weight (end)
+
+# Per-sample loss clamp: prevents outlier samples from destabilizing training
+LOSS_CLAMP     = 1000.0   # clamp per-sample NLL before averaging
 # =================================================
 
 
@@ -245,6 +250,8 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
     energy_loss_sum = 0.0
     n_batches = 0
 
+    nan_printed = False  # print debug info on first NaN per epoch
+
     for batch_idx, (theta_batch, x_batch) in enumerate(train_loader):
         theta_batch = theta_batch.to(device)
         x_batch = x_batch.to(device)
@@ -254,6 +261,9 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
         # 1. Flow loss: -log_prob(theta | x)
         # flow.loss() returns per-sample NLL, shape (batch,)
         flow_nll = flow.loss(theta_batch, condition=x_batch)
+
+        # Clamp per-sample losses to prevent outlier-driven instability
+        flow_nll = flow_nll.clamp(max=LOSS_CLAMP)
         flow_loss = flow_nll.mean()
 
         # 2. Grab cached embedding from the EGNN forward pass
@@ -263,12 +273,14 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
         target_dir = theta_batch[:, 1:4]  # (batch, 3) — Vx, Vy, Vz
         mu_hat, kappa = dir_head(z)
         dir_nll = axis_aware_vmf_nll(mu_hat, kappa, target_dir)
+        dir_nll = dir_nll.clamp(max=LOSS_CLAMP)
         dir_loss = dir_nll.mean()
 
         # 4. Auxiliary energy loss (heteroscedastic Gaussian)
         target_energy = theta_batch[:, 0]  # (batch,) — Energy
         E_pred, log_sigma = energy_head(z)
         e_nll = gaussian_nll(E_pred, log_sigma, target_energy)
+        e_nll = e_nll.clamp(max=LOSS_CLAMP)
         energy_loss = e_nll.mean()
 
         # 5. Combined loss
@@ -276,18 +288,24 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
 
         # NaN guard: skip batch if any loss is NaN/Inf
         if not torch.isfinite(total_loss):
-            if batch_idx == 0 and epoch == 0:
-                # Debug: print what's going wrong on the very first batch
-                print(f"  [NaN DEBUG] flow_loss={flow_loss.item()}, "
+            if not nan_printed:
+                # Debug: print what's going wrong on the first NaN batch
+                nan_printed = True
+                print(f"  [NaN DEBUG epoch={epoch} batch={batch_idx}]")
+                print(f"    flow_loss={flow_loss.item()}, "
                       f"dir_loss={dir_loss.item()}, energy_loss={energy_loss.item()}")
-                print(f"  [NaN DEBUG] z stats: min={z.min().item():.3f}, "
-                      f"max={z.max().item():.3f}, mean={z.mean().item():.3f}")
-                print(f"  [NaN DEBUG] z has NaN: {z.isnan().any().item()}, "
-                      f"Inf: {z.isinf().any().item()}")
-                print(f"  [NaN DEBUG] kappa: min={kappa.min().item():.3f}, "
+                print(f"    z: min={z.min().item():.3f}, max={z.max().item():.3f}, "
+                      f"mean={z.mean().item():.3f}, NaN={z.isnan().any().item()}, "
+                      f"Inf={z.isinf().any().item()}")
+                print(f"    kappa: min={kappa.min().item():.3f}, "
                       f"max={kappa.max().item():.3f}")
-                print(f"  [NaN DEBUG] flow_nll has NaN: {flow_nll.isnan().any().item()}, "
-                      f"Inf: {flow_nll.isinf().any().item()}")
+                print(f"    flow_nll: NaN={flow_nll.isnan().any().item()}, "
+                      f"Inf={flow_nll.isinf().any().item()}, "
+                      f"max={flow_nll.max().item():.3f}")
+                # Check model weights for NaN
+                n_nan_params = sum(p.isnan().any().item()
+                                   for p in flow.parameters())
+                print(f"    flow params with NaN: {n_nan_params}")
             continue
 
         # 6. Backward + clip + step
@@ -345,17 +363,20 @@ def validate(flow, cached_embedding, dir_head, energy_head,
         x_batch = x_batch.to(device)
 
         flow_nll = flow.loss(theta_batch, condition=x_batch)
+        flow_nll = flow_nll.clamp(max=LOSS_CLAMP)
         flow_loss = flow_nll.mean()
 
         z = cached_embedding.last_z
         target_dir = theta_batch[:, 1:4]
         mu_hat, kappa = dir_head(z)
         dir_nll = axis_aware_vmf_nll(mu_hat, kappa, target_dir)
+        dir_nll = dir_nll.clamp(max=LOSS_CLAMP)
         dir_loss = dir_nll.mean()
 
         target_energy = theta_batch[:, 0]
         E_pred, log_sigma = energy_head(z)
         e_nll = gaussian_nll(E_pred, log_sigma, target_energy)
+        e_nll = e_nll.clamp(max=LOSS_CLAMP)
         energy_loss = e_nll.mean()
 
         total_loss = flow_loss + alpha * dir_loss + beta * energy_loss
@@ -370,11 +391,17 @@ def validate(flow, cached_embedding, dir_head, energy_head,
         energy_loss_sum += energy_loss.item()
         n_batches += 1
 
+    if n_batches == 0:
+        return {
+            'total': float('inf'), 'flow': float('inf'),
+            'direction': float('inf'), 'energy': float('inf'),
+        }
+
     return {
-        'total': total_loss_sum / max(n_batches, 1),
-        'flow': flow_loss_sum / max(n_batches, 1),
-        'direction': dir_loss_sum / max(n_batches, 1),
-        'energy': energy_loss_sum / max(n_batches, 1),
+        'total': total_loss_sum / n_batches,
+        'flow': flow_loss_sum / n_batches,
+        'direction': dir_loss_sum / n_batches,
+        'energy': energy_loss_sum / n_batches,
     }
 
 
@@ -492,7 +519,7 @@ def main():
     best_val_loss = float('inf')
     if args.resume and CHECKPOINT_FILE.exists():
         print(f"\n[RESUME] Loading checkpoint: {CHECKPOINT_FILE}")
-        ckpt = torch.load(CHECKPOINT_FILE, map_location=device)
+        ckpt = torch.load(CHECKPOINT_FILE, map_location=device, weights_only=False)
         flow.load_state_dict(ckpt['flow_state_dict'])
         dir_head.load_state_dict(ckpt['dir_head_state_dict'])
         energy_head.load_state_dict(ckpt['energy_head_state_dict'])
@@ -577,7 +604,7 @@ def main():
 
         # Checkpointing + early stopping
         val_loss = val_metrics['total']
-        if val_loss < best_val_loss:
+        if math.isfinite(val_loss) and val_loss < best_val_loss:
             best_val_loss = val_loss
             epochs_no_improve = 0
             save_checkpoint(flow, cached_embedding, dir_head, energy_head,
@@ -624,8 +651,10 @@ def main():
 
     # 5. Build SBI posterior from best checkpoint (for eval compatibility)
     print("\n[STEP 4] Building SBI posterior from best checkpoint...")
+    posterior = None
     try:
-        best_ckpt = torch.load(BEST_CKPT_FILE, map_location='cpu')
+        best_ckpt = torch.load(BEST_CKPT_FILE, map_location='cpu',
+                               weights_only=False)
         best_flow = best_ckpt['flow_module']
 
         from sbi.inference import SNPE
@@ -644,10 +673,14 @@ def main():
         print(f"[SAVE] Posterior saved -> {posterior_path}")
     except Exception as e:
         print(f"[WARN] Could not build posterior: {e}")
+        import traceback
+        traceback.print_exc()
         print(f"       Best checkpoint is still available at {BEST_CKPT_FILE}")
 
-    # 6. Run evaluation if eval data exists
-    if EVAL_CSV.exists():
+    # 6. Run evaluation if eval data exists and posterior was built
+    if posterior is None:
+        print("\n[SKIP] Evaluation skipped — posterior could not be built")
+    elif EVAL_CSV.exists():
         print("\n[STEP 5] Running Full Posterior Evaluation...")
         try:
             from src.evaluation.eval_mcpe3d import ContinuousEvaluator3D
