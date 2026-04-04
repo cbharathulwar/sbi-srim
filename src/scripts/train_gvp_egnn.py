@@ -556,6 +556,17 @@ def main():
             save_checkpoint(flow, cached_embedding, dir_head, energy_head,
                           optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
 
+            # Auto-save to Google Drive if running on Colab (crash protection)
+            drive_dir = Path('/content/drive/MyDrive/sbi-srim-results/gvp_egnn')
+            if drive_dir.parent.exists():
+                drive_dir.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy2(CHECKPOINT_FILE, drive_dir / 'checkpoint.pt')
+                if BEST_CKPT_FILE.exists():
+                    shutil.copy2(BEST_CKPT_FILE, drive_dir / 'best_checkpoint.pt')
+                shutil.copy2(TRAIN_LOG, drive_dir / 'training_log.csv')
+                print(f"  [DRIVE] Checkpoints + log saved to Google Drive")
+
         # Early stopping
         if epochs_no_improve >= PATIENCE:
             print(f"\n[STOP] No improvement for {PATIENCE} epochs. Stopping.")
