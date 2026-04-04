@@ -370,8 +370,8 @@ class GVPEGNNLayer(nn.Module):
         # 1. Compute edge geometry
         x_diff = x[src] - x[dst]                                  # (E, 3)
         d_ij_sq = x_diff.pow(2).sum(dim=-1, keepdim=True)         # (E, 1)
-        d_ij = d_ij_sq.sqrt().clamp(min=1e-8)                     # (E, 1)
-        dir_ij = x_diff / d_ij                                     # (E, 3) unit vectors
+        # Use F.normalize for numerically safe unit vectors (no sqrt/div gradient issues)
+        dir_ij = F.normalize(x_diff, dim=-1)                       # (E, 3) unit vectors
 
         # 2. GVP: scalar-gated vector expansion
         # Gate depends on scalar node features + distance (rotation-invariant)
@@ -383,7 +383,8 @@ class GVPEGNNLayer(nn.Module):
         vectors = dir_ij.unsqueeze(1) * gate.unsqueeze(2)          # (E, v_dim, 3)
 
         # Rotation-invariant scalar: norms of each vector channel
-        vec_norms = vectors.norm(dim=-1)                            # (E, v_dim)
+        # Use sqrt(x²+eps) instead of .norm() to avoid grad explosion at zero
+        vec_norms = (vectors.pow(2).sum(dim=-1) + 1e-8).sqrt()     # (E, v_dim)
 
         # 3. Edge messages with GVP scalar features
         edge_input = torch.cat([h[src], h[dst], d_ij_sq, vec_norms], dim=-1)
@@ -408,7 +409,8 @@ class GVPEGNNLayer(nn.Module):
         agg_v = torch.zeros(N, self.v_dim * 3, device=h.device, dtype=h.dtype)
         agg_v.scatter_add_(0, dst.unsqueeze(-1).expand_as(vectors_flat), vectors_flat)
         agg_v = agg_v.view(N, self.v_dim, 3)             # (N, v_dim, 3)
-        agg_v_norms = agg_v.norm(dim=-1)                  # (N, v_dim) — directional coherence
+        # sqrt(x²+eps) for gradient-safe norm
+        agg_v_norms = (agg_v.pow(2).sum(dim=-1) + 1e-8).sqrt()  # (N, v_dim)
 
         # 6. Scalar feature update with GVP vector norms
         agg_m = torch.zeros(N, m_ij.shape[1], device=h.device, dtype=h.dtype)
