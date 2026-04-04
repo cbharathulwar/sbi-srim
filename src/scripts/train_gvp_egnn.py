@@ -126,19 +126,25 @@ def build_flow(embedding_net, n_max, k, d_latent, device):
     cached_embedding = CachedEGNNEmbedding(embedding_net)
 
     # Create the flow builder function
+    # z_score_x="none": EGNN already normalizes coords to [-1,1]
+    # z_score_theta="independent": let SBI standardize theta (E is 0-105,
+    #   directions are -1 to 1 — the scale mismatch causes NaN without z-scoring)
     build_fn = posterior_nn(
         model="nsf",
         embedding_net=cached_embedding,
         hidden_features=NSF_HIDDEN,
         num_transforms=NUM_TRANSFORMS,
-        z_score_x="none",    # our EGNN already normalizes
-        z_score_theta="none", # we handle theta normalization ourselves
+        z_score_x="none",
+        z_score_theta="independent",
     )
 
-    # Instantiate the flow by calling build_fn with sample data
-    # SBI uses this to determine input/output dimensions
-    dummy_theta = torch.randn(2, 4)   # [E, Vx, Vy, Vz]
-    dummy_x = torch.randn(2, n_max * (3 + k))  # flattened coords + knn
+    # Instantiate the flow by calling build_fn with REPRESENTATIVE sample data
+    # SBI uses this to compute z-scoring statistics for theta
+    # Must reflect actual data distribution, not random noise
+    dummy_theta = torch.zeros(100, 4)
+    dummy_theta[:, 0] = torch.rand(100) * 105.0          # Energy: [0, 105]
+    dummy_theta[:, 1:4] = F.normalize(torch.randn(100, 3), dim=-1)  # unit dirs
+    dummy_x = torch.randn(100, n_max * (3 + k))
 
     flow = build_fn(dummy_theta, dummy_x)
     flow = flow.to(device)
@@ -239,7 +245,7 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
     energy_loss_sum = 0.0
     n_batches = 0
 
-    for theta_batch, x_batch in train_loader:
+    for batch_idx, (theta_batch, x_batch) in enumerate(train_loader):
         theta_batch = theta_batch.to(device)
         x_batch = x_batch.to(device)
 
@@ -267,6 +273,22 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
 
         # 5. Combined loss
         total_loss = flow_loss + alpha * dir_loss + beta * energy_loss
+
+        # NaN guard: skip batch if any loss is NaN/Inf
+        if not torch.isfinite(total_loss):
+            if batch_idx == 0 and epoch == 0:
+                # Debug: print what's going wrong on the very first batch
+                print(f"  [NaN DEBUG] flow_loss={flow_loss.item()}, "
+                      f"dir_loss={dir_loss.item()}, energy_loss={energy_loss.item()}")
+                print(f"  [NaN DEBUG] z stats: min={z.min().item():.3f}, "
+                      f"max={z.max().item():.3f}, mean={z.mean().item():.3f}")
+                print(f"  [NaN DEBUG] z has NaN: {z.isnan().any().item()}, "
+                      f"Inf: {z.isinf().any().item()}")
+                print(f"  [NaN DEBUG] kappa: min={kappa.min().item():.3f}, "
+                      f"max={kappa.max().item():.3f}")
+                print(f"  [NaN DEBUG] flow_nll has NaN: {flow_nll.isnan().any().item()}, "
+                      f"Inf: {flow_nll.isinf().any().item()}")
+            continue
 
         # 6. Backward + clip + step
         total_loss.backward()
