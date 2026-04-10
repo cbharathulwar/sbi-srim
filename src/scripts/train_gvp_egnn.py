@@ -80,18 +80,25 @@ LR_MIN         = 1e-5
 WEIGHT_DECAY   = 1e-4
 WARMUP_EPOCHS  = 5
 MAX_EPOCHS     = 200
-PATIENCE       = 40       # early stopping
-VAL_FRACTION   = 0.1
+PATIENCE       = 30       # early stopping (stage 1)
+VAL_FRACTION   = 0.05     # 10k val tracks is plenty with 197k total
 GRAD_CLIP      = 1.0
-MAX_TRAIN_TRACKS = 100_000
+MAX_TRAIN_TRACKS = 200_000  # use all 197k available
 
 # Auxiliary loss weights (decay schedule)
-# NOTE: energy loss is O(1000) at init (sigma~1, residuals~50),
-# so beta must be small to avoid destabilizing the NSF flow.
+# v2: raised beta 10x (safe now that log_sigma is clamped in EnergyHead)
 ALPHA_START    = 0.5      # vMF direction loss weight (start)
-ALPHA_END      = 0.05     # vMF direction loss weight (end)
-BETA_START     = 0.01     # Gaussian energy loss weight (start)
-BETA_END       = 0.001    # Gaussian energy loss weight (end)
+ALPHA_END      = 0.1      # vMF direction loss weight (end)
+BETA_START     = 0.1      # Gaussian energy loss weight (start)  — was 0.01
+BETA_END       = 0.05     # Gaussian energy loss weight (end)    — was 0.001
+
+# Stage 2: flow-only fine-tuning
+STAGE2_EPOCHS    = 60
+STAGE2_LR_MAX    = 5e-5
+STAGE2_LR_MIN    = 1e-6
+STAGE2_WARMUP    = 3
+STAGE2_PATIENCE  = 20
+STAGE2_GRAD_CLIP = 0.5
 
 # Per-sample loss clamp: prevents outlier samples from destabilizing training
 LOSS_CLAMP     = 1000.0   # clamp per-sample NLL before averaging
@@ -116,9 +123,42 @@ def cosine_lr_with_warmup(epoch, warmup_epochs, max_epochs, lr_max, lr_min):
 
 
 def aux_weight_schedule(epoch, max_epochs, start, end):
-    """Linear decay of auxiliary loss weights."""
+    """Cosine decay of auxiliary loss weights (holds near start longer than linear)."""
     progress = min(epoch / max(max_epochs - 1, 1), 1.0)
-    return start + (end - start) * progress
+    cosine_progress = 0.5 * (1 - math.cos(math.pi * progress))
+    return start + (end - start) * cosine_progress
+
+
+def random_so3_rotation(batch_size, device):
+    """Sample uniform random rotation matrices via QR decomposition."""
+    z = torch.randn(batch_size, 3, 3, device=device)
+    q, r = torch.linalg.qr(z)
+    d = torch.diagonal(r, dim1=-2, dim2=-1).sign()
+    q = q * d.unsqueeze(-2)
+    det = torch.det(q)
+    q[det < 0, :, 0] *= -1
+    return q  # (B, 3, 3)
+
+
+def apply_so3_augmentation(x_batch, theta_batch, n_max):
+    """Apply random SO(3) rotation to coordinates and direction targets.
+    kNN indices are distance-based, so unchanged under rotation."""
+    B = x_batch.shape[0]
+    device = x_batch.device
+
+    R = random_so3_rotation(B, device)  # (B, 3, 3)
+
+    # Rotate coordinates (first n_max*3 elements of x_flat)
+    coords = x_batch[:, :n_max * 3].view(B, n_max, 3)
+    coords_rot = torch.bmm(coords, R.transpose(-1, -2))
+    x_batch[:, :n_max * 3] = coords_rot.reshape(B, -1)
+
+    # Rotate direction targets (columns 1:4 of theta = Vx, Vy, Vz)
+    dirs = theta_batch[:, 1:4].unsqueeze(1)  # (B, 1, 3)
+    dirs_rot = torch.bmm(dirs, R.transpose(-1, -2)).squeeze(1)  # (B, 3)
+    theta_batch[:, 1:4] = dirs_rot
+
+    return x_batch, theta_batch
 
 
 def build_flow(embedding_net, n_max, k, d_latent, device):
@@ -235,7 +275,8 @@ def prepare_data(args, batch_size=BATCH_SIZE):
 
 
 def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
-                    optimizer, train_loader, device, epoch, max_epochs):
+                    optimizer, train_loader, device, epoch, max_epochs,
+                    n_max=None, augment=True):
     """Train for one epoch with combined loss."""
     flow.train()
     dir_head.train()
@@ -255,6 +296,12 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
     for batch_idx, (theta_batch, x_batch) in enumerate(train_loader):
         theta_batch = theta_batch.to(device)
         x_batch = x_batch.to(device)
+
+        # SO(3) data augmentation (training only)
+        if augment and n_max is not None:
+            x_batch, theta_batch = apply_so3_augmentation(
+                x_batch, theta_batch, n_max
+            )
 
         optimizer.zero_grad()
 
@@ -561,7 +608,8 @@ def main():
         # Train
         train_metrics = train_one_epoch(
             flow, cached_embedding, dir_head, energy_head,
-            optimizer, train_loader, device, epoch, max_epochs
+            optimizer, train_loader, device, epoch, max_epochs,
+            n_max=n_max, augment=True
         )
 
         # Validate
@@ -603,7 +651,7 @@ def main():
               f"lr={lr:.1e} | {epoch_sec:.0f}s", flush=True)
 
         # Checkpointing + early stopping
-        val_loss = val_metrics['total']
+        val_loss = val_metrics['flow']  # posterior quality is the goal
         if math.isfinite(val_loss) and val_loss < best_val_loss:
             best_val_loss = val_loss
             epochs_no_improve = 0
@@ -641,13 +689,134 @@ def main():
     save_checkpoint(flow, cached_embedding, dir_head, energy_head,
                   optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
 
+    stage1_min = (time() - t_start) / 60
     print(f"\n{'='*60}")
-    print(f"  Training Complete")
-    print(f"  Best val_loss: {best_val_loss:.4f}")
-    print(f"  Total time:    {total_min:.1f} min")
-    print(f"  Checkpoints:   {BEST_CKPT_FILE}")
-    print(f"  Log:           {TRAIN_LOG}")
+    print(f"  Stage 1 Complete")
+    print(f"  Best val flow loss: {best_val_loss:.4f}")
+    print(f"  Stage 1 time:       {stage1_min:.1f} min")
     print(f"{'='*60}")
+
+    # ================================================================
+    # STAGE 2: Flow-only fine-tuning
+    # ================================================================
+    print(f"\n{'='*60}")
+    print(f"  STAGE 2: Flow-Only Fine-Tuning ({STAGE2_EPOCHS} epochs)")
+    print(f"{'='*60}")
+
+    # Load best checkpoint from stage 1
+    best_ckpt = torch.load(BEST_CKPT_FILE, map_location=device,
+                            weights_only=False)
+    flow.load_state_dict(best_ckpt['flow_state_dict'])
+    dir_head.load_state_dict(best_ckpt['dir_head_state_dict'])
+    energy_head.load_state_dict(best_ckpt['energy_head_state_dict'])
+    print(f"  Loaded best stage 1 checkpoint (val_loss={best_val_loss:.4f})")
+
+    # Freeze backbone + auxiliary heads
+    for param in cached_embedding.embedding.parameters():
+        param.requires_grad = False
+    for param in dir_head.parameters():
+        param.requires_grad = False
+    for param in energy_head.parameters():
+        param.requires_grad = False
+
+    # Collect flow-only params (exclude frozen embedding)
+    flow_only_params = [p for p in flow.parameters() if p.requires_grad]
+    n_flow_params = sum(p.numel() for p in flow_only_params)
+    print(f"  Flow-only params: {n_flow_params:,} (backbone frozen)")
+
+    optimizer_s2 = torch.optim.AdamW(flow_only_params, lr=STAGE2_LR_MAX,
+                                      weight_decay=WEIGHT_DECAY)
+
+    best_val_loss_s2 = best_val_loss  # start from stage 1 best
+    epochs_no_improve_s2 = 0
+    t_s2_start = time()
+
+    for s2_epoch in range(STAGE2_EPOCHS):
+        ep_start = time()
+
+        # LR schedule for stage 2
+        lr = cosine_lr_with_warmup(s2_epoch, STAGE2_WARMUP, STAGE2_EPOCHS,
+                                    STAGE2_LR_MAX, STAGE2_LR_MIN)
+        for pg in optimizer_s2.param_groups:
+            pg['lr'] = lr
+
+        # Train (flow loss only, no augmentation — backbone is frozen)
+        flow.train()
+        flow_loss_sum = 0.0
+        n_batches = 0
+
+        for theta_batch, x_batch in train_loader:
+            theta_batch = theta_batch.to(device)
+            x_batch = x_batch.to(device)
+
+            optimizer_s2.zero_grad()
+
+            flow_nll = flow.loss(theta_batch, condition=x_batch)
+            flow_nll = flow_nll.clamp(max=LOSS_CLAMP)
+            flow_loss = flow_nll.mean()
+
+            if not torch.isfinite(flow_loss):
+                continue
+
+            flow_loss.backward()
+            torch.nn.utils.clip_grad_norm_(flow_only_params,
+                                            max_norm=STAGE2_GRAD_CLIP)
+            optimizer_s2.step()
+
+            flow_loss_sum += flow_loss.item()
+            n_batches += 1
+
+        train_flow = flow_loss_sum / max(n_batches, 1)
+
+        # Validate
+        val_metrics = validate(
+            flow, cached_embedding, dir_head, energy_head,
+            val_loader, device, s2_epoch, STAGE2_EPOCHS
+        )
+        val_flow = val_metrics['flow']
+
+        ep_sec = time() - ep_start
+        print(f"  S2 Epoch {s2_epoch}/{STAGE2_EPOCHS} | "
+              f"train_flow={train_flow:.4f} val_flow={val_flow:.4f} | "
+              f"lr={lr:.1e} | {ep_sec:.0f}s", flush=True)
+
+        # Early stopping on flow loss
+        if math.isfinite(val_flow) and val_flow < best_val_loss_s2:
+            best_val_loss_s2 = val_flow
+            epochs_no_improve_s2 = 0
+            # Save best stage 2 checkpoint
+            save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                          optimizer_s2, s2_epoch, val_metrics,
+                          best_val_loss_s2, BEST_CKPT_FILE)
+            print(f"  [SAVE] New best (stage 2): val_flow={val_flow:.4f}")
+        else:
+            epochs_no_improve_s2 += 1
+
+        if epochs_no_improve_s2 >= STAGE2_PATIENCE:
+            print(f"\n  [STOP] Stage 2: No improvement for "
+                  f"{STAGE2_PATIENCE} epochs.")
+            break
+
+    s2_min = (time() - t_s2_start) / 60
+    total_min = (time() - t_start) / 60
+
+    print(f"\n{'='*60}")
+    print(f"  Training Complete (Both Stages)")
+    print(f"  Stage 1 best val_flow: {best_val_loss:.4f}")
+    print(f"  Stage 2 best val_flow: {best_val_loss_s2:.4f}")
+    print(f"  Stage 1 time: {stage1_min:.1f} min | Stage 2 time: {s2_min:.1f} min")
+    print(f"  Total time:   {total_min:.1f} min")
+    print(f"  Checkpoints:  {BEST_CKPT_FILE}")
+    print(f"  Log:          {TRAIN_LOG}")
+    print(f"{'='*60}")
+
+    # Unfreeze everything (for posterior building)
+    for param in cached_embedding.embedding.parameters():
+        param.requires_grad = True
+    for param in dir_head.parameters():
+        param.requires_grad = True
+    for param in energy_head.parameters():
+        param.requires_grad = True
 
     # 5. Build SBI posterior from best checkpoint (for eval compatibility)
     print("\n[STEP 4] Building SBI posterior from best checkpoint...")

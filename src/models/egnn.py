@@ -456,13 +456,15 @@ class EnergyHead(nn.Module):
     def __init__(self, d_latent=384):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(d_latent, 64), nn.SiLU(), nn.Linear(64, 2)
+            nn.Linear(d_latent, 128), nn.SiLU(),
+            nn.Linear(128, 64), nn.SiLU(),
+            nn.Linear(64, 2),
         )
 
     def forward(self, z):
         out = self.net(z)
         E_pred = F.softplus(out[:, 0])     # energy > 0
-        log_sigma = out[:, 1]               # log uncertainty
+        log_sigma = out[:, 1].clamp(-2.0, 4.0)  # σ ∈ [0.14, 55] keV
         return E_pred, log_sigma
 
 
