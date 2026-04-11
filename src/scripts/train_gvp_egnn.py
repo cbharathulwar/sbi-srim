@@ -474,6 +474,8 @@ def main():
                         help='Smoke test: 5 epochs on 5k tracks')
     parser.add_argument('--resume', action='store_true',
                         help='Resume from checkpoint')
+    parser.add_argument('--stage2-only', action='store_true',
+                        help='Skip stage 1, load best checkpoint, run stage 2 + eval only')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
     parser.add_argument('--max-epochs', type=int, default=None)
     args = parser.parse_args()
@@ -488,7 +490,9 @@ def main():
     print(f"  GVP-EGNN Unified Training")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}")
-    if args.smoke:
+    if args.stage2_only:
+        print(f"  MODE: Stage 2 only (flow fine-tuning + eval)")
+    elif args.smoke:
         print(f"  MODE: Smoke test ({max_epochs} epochs, 5k tracks)")
     else:
         print(f"  MODE: Full training ({max_epochs} epochs)")
@@ -561,10 +565,24 @@ def main():
                  list(energy_head.parameters())
     optimizer = torch.optim.AdamW(all_params, lr=LR_MAX, weight_decay=WEIGHT_DECAY)
 
-    # Resume from checkpoint if requested
+    # Load best checkpoint for stage2-only mode
     start_epoch = 0
     best_val_loss = float('inf')
-    if args.resume and CHECKPOINT_FILE.exists():
+    if args.stage2_only:
+        if not BEST_CKPT_FILE.exists():
+            print(f"[ERROR] --stage2-only requires {BEST_CKPT_FILE} to exist!")
+            sys.exit(1)
+        print(f"\n[STAGE2-ONLY] Loading best checkpoint: {BEST_CKPT_FILE}")
+        ckpt = torch.load(BEST_CKPT_FILE, map_location=device, weights_only=False)
+        flow.load_state_dict(ckpt['flow_state_dict'])
+        dir_head.load_state_dict(ckpt['dir_head_state_dict'])
+        energy_head.load_state_dict(ckpt['energy_head_state_dict'])
+        best_val_loss = ckpt['best_val_loss']
+        print(f"[STAGE2-ONLY] Best val_loss from stage 1: {best_val_loss:.4f}")
+        del ckpt
+
+    # Resume from checkpoint if requested
+    elif args.resume and CHECKPOINT_FILE.exists():
         print(f"\n[RESUME] Loading checkpoint: {CHECKPOINT_FILE}")
         ckpt = torch.load(CHECKPOINT_FILE, map_location=device, weights_only=False)
         flow.load_state_dict(ckpt['flow_state_dict'])
@@ -576,125 +594,129 @@ def main():
         print(f"[RESUME] Starting from epoch {start_epoch}, best_val={best_val_loss:.4f}")
         del ckpt
 
-    # 4. Logging
-    writer = SummaryWriter(str(TB_LOG_DIR))
-    TRAIN_LOG.parent.mkdir(parents=True, exist_ok=True)
-    if start_epoch == 0:
-        with open(TRAIN_LOG, 'w') as f:
-            f.write("epoch,train_total,train_flow,train_dir,train_energy,"
-                    "val_total,val_flow,val_dir,val_energy,"
-                    "lr,alpha,beta,epoch_sec,elapsed_min\n")
+    # 4. Stage 1 Training (skip if --stage2-only)
+    if args.stage2_only:
+        stage1_min = 0.0
+        print(f"\n[SKIP] Stage 1 skipped (--stage2-only)")
+    else:
+        writer = SummaryWriter(str(TB_LOG_DIR))
+        TRAIN_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if start_epoch == 0:
+            with open(TRAIN_LOG, 'w') as f:
+                f.write("epoch,train_total,train_flow,train_dir,train_energy,"
+                        "val_total,val_flow,val_dir,val_energy,"
+                        "lr,alpha,beta,epoch_sec,elapsed_min\n")
 
-    print(f"\n[STEP 3] Training...")
-    print(f"  LR: {LR_MAX} -> {LR_MIN} (cosine + {WARMUP_EPOCHS}-epoch warmup)")
-    print(f"  Weight decay: {WEIGHT_DECAY}")
-    print(f"  Grad clip: {GRAD_CLIP}")
-    print(f"  Aux weights: alpha {ALPHA_START}->{ALPHA_END}, beta {BETA_START}->{BETA_END}")
-    print(f"  Patience: {PATIENCE} epochs")
-    print(f"  Batch size: {batch_size}")
-    print(f"\n  TensorBoard: tensorboard --logdir \"{TB_LOG_DIR}\"")
-    print(f"  CSV log: {TRAIN_LOG}\n")
+        print(f"\n[STEP 3] Training...")
+        print(f"  LR: {LR_MAX} -> {LR_MIN} (cosine + {WARMUP_EPOCHS}-epoch warmup)")
+        print(f"  Weight decay: {WEIGHT_DECAY}")
+        print(f"  Grad clip: {GRAD_CLIP}")
+        print(f"  Aux weights: alpha {ALPHA_START}->{ALPHA_END}, beta {BETA_START}->{BETA_END}")
+        print(f"  Patience: {PATIENCE} epochs")
+        print(f"  Batch size: {batch_size}")
+        print(f"\n  TensorBoard: tensorboard --logdir \"{TB_LOG_DIR}\"")
+        print(f"  CSV log: {TRAIN_LOG}\n")
 
-    epochs_no_improve = 0
+        epochs_no_improve = 0
 
-    for epoch in range(start_epoch, max_epochs):
-        t_epoch = time()
+        for epoch in range(start_epoch, max_epochs):
+            t_epoch = time()
 
-        # Update learning rate
-        lr = cosine_lr_with_warmup(epoch, WARMUP_EPOCHS, max_epochs, LR_MAX, LR_MIN)
-        for pg in optimizer.param_groups:
-            pg['lr'] = lr
+            # Update learning rate
+            lr = cosine_lr_with_warmup(epoch, WARMUP_EPOCHS, max_epochs, LR_MAX, LR_MIN)
+            for pg in optimizer.param_groups:
+                pg['lr'] = lr
 
-        # Train
-        train_metrics = train_one_epoch(
-            flow, cached_embedding, dir_head, energy_head,
-            optimizer, train_loader, device, epoch, max_epochs,
-            n_max=n_max, augment=True
-        )
+            # Train
+            train_metrics = train_one_epoch(
+                flow, cached_embedding, dir_head, energy_head,
+                optimizer, train_loader, device, epoch, max_epochs,
+                n_max=n_max, augment=True
+            )
 
-        # Validate
-        val_metrics = validate(
-            flow, cached_embedding, dir_head, energy_head,
-            val_loader, device, epoch, max_epochs
-        )
+            # Validate
+            val_metrics = validate(
+                flow, cached_embedding, dir_head, energy_head,
+                val_loader, device, epoch, max_epochs
+            )
 
-        epoch_sec = time() - t_epoch
-        elapsed_min = (time() - t_start) / 60
+            epoch_sec = time() - t_epoch
+            elapsed_min = (time() - t_start) / 60
 
-        # Log
-        writer.add_scalar("train/total_loss", train_metrics['total'], epoch)
-        writer.add_scalar("train/flow_loss", train_metrics['flow'], epoch)
-        writer.add_scalar("train/dir_loss", train_metrics['direction'], epoch)
-        writer.add_scalar("train/energy_loss", train_metrics['energy'], epoch)
-        writer.add_scalar("val/total_loss", val_metrics['total'], epoch)
-        writer.add_scalar("val/flow_loss", val_metrics['flow'], epoch)
-        writer.add_scalar("val/dir_loss", val_metrics['direction'], epoch)
-        writer.add_scalar("val/energy_loss", val_metrics['energy'], epoch)
-        writer.add_scalar("lr", lr, epoch)
-        writer.add_scalar("alpha", train_metrics['alpha'], epoch)
-        writer.add_scalar("beta", train_metrics['beta'], epoch)
-        writer.flush()
+            # Log
+            writer.add_scalar("train/total_loss", train_metrics['total'], epoch)
+            writer.add_scalar("train/flow_loss", train_metrics['flow'], epoch)
+            writer.add_scalar("train/dir_loss", train_metrics['direction'], epoch)
+            writer.add_scalar("train/energy_loss", train_metrics['energy'], epoch)
+            writer.add_scalar("val/total_loss", val_metrics['total'], epoch)
+            writer.add_scalar("val/flow_loss", val_metrics['flow'], epoch)
+            writer.add_scalar("val/dir_loss", val_metrics['direction'], epoch)
+            writer.add_scalar("val/energy_loss", val_metrics['energy'], epoch)
+            writer.add_scalar("lr", lr, epoch)
+            writer.add_scalar("alpha", train_metrics['alpha'], epoch)
+            writer.add_scalar("beta", train_metrics['beta'], epoch)
+            writer.flush()
 
-        with open(TRAIN_LOG, 'a') as f:
-            f.write(f"{epoch},{train_metrics['total']:.6f},{train_metrics['flow']:.6f},"
-                    f"{train_metrics['direction']:.6f},{train_metrics['energy']:.6f},"
-                    f"{val_metrics['total']:.6f},{val_metrics['flow']:.6f},"
-                    f"{val_metrics['direction']:.6f},{val_metrics['energy']:.6f},"
-                    f"{lr:.6f},{train_metrics['alpha']:.4f},{train_metrics['beta']:.4f},"
-                    f"{epoch_sec:.1f},{elapsed_min:.1f}\n")
+            with open(TRAIN_LOG, 'a') as f:
+                f.write(f"{epoch},{train_metrics['total']:.6f},{train_metrics['flow']:.6f},"
+                        f"{train_metrics['direction']:.6f},{train_metrics['energy']:.6f},"
+                        f"{val_metrics['total']:.6f},{val_metrics['flow']:.6f},"
+                        f"{val_metrics['direction']:.6f},{val_metrics['energy']:.6f},"
+                        f"{lr:.6f},{train_metrics['alpha']:.4f},{train_metrics['beta']:.4f},"
+                        f"{epoch_sec:.1f},{elapsed_min:.1f}\n")
 
-        # Print progress
-        print(f"Epoch {epoch:3d}/{max_epochs} | "
-              f"train={train_metrics['total']:.3f} (flow={train_metrics['flow']:.3f} "
-              f"dir={train_metrics['direction']:.3f} E={train_metrics['energy']:.3f}) | "
-              f"val={val_metrics['total']:.3f} | "
-              f"lr={lr:.1e} | {epoch_sec:.0f}s", flush=True)
+            # Print progress
+            print(f"Epoch {epoch:3d}/{max_epochs} | "
+                  f"train={train_metrics['total']:.3f} (flow={train_metrics['flow']:.3f} "
+                  f"dir={train_metrics['direction']:.3f} E={train_metrics['energy']:.3f}) | "
+                  f"val={val_metrics['total']:.3f} | "
+                  f"lr={lr:.1e} | {epoch_sec:.0f}s", flush=True)
 
-        # Checkpointing + early stopping
-        val_loss = val_metrics['flow']  # posterior quality is the goal
-        if math.isfinite(val_loss) and val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                          optimizer, epoch, val_metrics, best_val_loss, BEST_CKPT_FILE)
-            print(f"  -> New best val_loss={best_val_loss:.4f} (saved)")
-        else:
-            epochs_no_improve += 1
+            # Checkpointing + early stopping
+            val_loss = val_metrics['flow']  # posterior quality is the goal
+            if math.isfinite(val_loss) and val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+                save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                              optimizer, epoch, val_metrics, best_val_loss, BEST_CKPT_FILE)
+                print(f"  -> New best val_loss={best_val_loss:.4f} (saved)")
+            else:
+                epochs_no_improve += 1
 
-        # Periodic checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                          optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
+            # Periodic checkpoint every 10 epochs
+            if (epoch + 1) % 10 == 0:
+                save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                              optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
 
-            # Auto-save to Google Drive if running on Colab (crash protection)
-            drive_dir = Path('/content/drive/MyDrive/sbi-srim-results/gvp_egnn')
-            if drive_dir.parent.exists():
-                drive_dir.mkdir(parents=True, exist_ok=True)
-                import shutil
-                shutil.copy2(CHECKPOINT_FILE, drive_dir / 'checkpoint.pt')
-                if BEST_CKPT_FILE.exists():
-                    shutil.copy2(BEST_CKPT_FILE, drive_dir / 'best_checkpoint.pt')
-                shutil.copy2(TRAIN_LOG, drive_dir / 'training_log.csv')
-                print(f"  [DRIVE] Checkpoints + log saved to Google Drive")
+                # Auto-save to Google Drive if running on Colab (crash protection)
+                drive_dir = Path('/content/drive/MyDrive/sbi-srim-results/gvp_egnn')
+                if drive_dir.parent.exists():
+                    drive_dir.mkdir(parents=True, exist_ok=True)
+                    import shutil
+                    shutil.copy2(CHECKPOINT_FILE, drive_dir / 'checkpoint.pt')
+                    if BEST_CKPT_FILE.exists():
+                        shutil.copy2(BEST_CKPT_FILE, drive_dir / 'best_checkpoint.pt')
+                    shutil.copy2(TRAIN_LOG, drive_dir / 'training_log.csv')
+                    print(f"  [DRIVE] Checkpoints + log saved to Google Drive")
 
-        # Early stopping
-        if epochs_no_improve >= PATIENCE:
-            print(f"\n[STOP] No improvement for {PATIENCE} epochs. Stopping.")
-            break
+            # Early stopping
+            if epochs_no_improve >= PATIENCE:
+                print(f"\n[STOP] No improvement for {PATIENCE} epochs. Stopping.")
+                break
 
-    writer.close()
-    total_min = (time() - t_start) / 60
+        writer.close()
+        total_min = (time() - t_start) / 60
 
-    # Save final checkpoint
-    save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                  optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
+        # Save final checkpoint
+        save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                      optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
 
-    stage1_min = (time() - t_start) / 60
-    print(f"\n{'='*60}")
-    print(f"  Stage 1 Complete")
-    print(f"  Best val flow loss: {best_val_loss:.4f}")
-    print(f"  Stage 1 time:       {stage1_min:.1f} min")
-    print(f"{'='*60}")
+        stage1_min = (time() - t_start) / 60
+        print(f"\n{'='*60}")
+        print(f"  Stage 1 Complete")
+        print(f"  Best val flow loss: {best_val_loss:.4f}")
+        print(f"  Stage 1 time:       {stage1_min:.1f} min")
+        print(f"{'='*60}")
 
     # ================================================================
     # STAGE 2: Flow-only fine-tuning
@@ -859,7 +881,71 @@ def main():
 
             # More samples = better calibration analysis
             n_eval_samples = 50 if args.smoke else 200
+            t_eval_start = time()
             df_eval = evaluator.run_eval(EVAL_CSV, num_samples=n_eval_samples)
+            t_eval_end = time()
+
+            # Inference timing report
+            n_eval_tracks = len(df_eval)
+            eval_total_sec = t_eval_end - t_eval_start
+            if n_eval_tracks > 0:
+                ms_per_track = (eval_total_sec / n_eval_tracks) * 1000
+                tracks_per_sec = n_eval_tracks / eval_total_sec
+                print(f"\n  [INFERENCE TIMING]")
+                print(f"    Total eval time:    {eval_total_sec:.1f}s for {n_eval_tracks} tracks")
+                print(f"    Per-track (w/ {n_eval_samples} posterior samples): {ms_per_track:.2f} ms")
+                print(f"    Throughput:         {tracks_per_sec:.1f} tracks/sec")
+                print(f"    Note: includes preprocessing + {n_eval_samples} posterior samples + stats")
+
+                # Single-track inference benchmark (pure forward pass + sampling)
+                print(f"\n  [SINGLE-TRACK BENCHMARK]")
+                try:
+                    flow_net = posterior.posterior_estimator
+                    # Grab one precomputed observation
+                    emb_net = flow_net.embedding_net
+                    k_nb = emb_net.k
+                    n_max_m = emb_net.n_max
+                    x_test, _, _, n_max_t, knn_test = preprocess_egnn(
+                        EVAL_CSV, k_neighbors=k_nb
+                    )
+                    if n_max_t < n_max_m:
+                        pad = n_max_m - n_max_t
+                        x_test = torch.cat([x_test, torch.zeros(x_test.shape[0], pad, 3)], dim=1)
+                        knn_test = torch.cat([knn_test,
+                            torch.full((knn_test.shape[0], pad, k_nb), -1,
+                                       dtype=knn_test.dtype)], dim=1)
+                        n_max_t = n_max_m
+                    n_t = x_test.shape[0]
+                    x_flat = torch.empty(n_t, n_max_t * (3 + k_nb), dtype=torch.float32)
+                    x_flat[:, :n_max_t * 3] = x_test.view(n_t, -1)
+                    for s in range(0, n_t, 10000):
+                        e = min(s + 10000, n_t)
+                        x_flat[s:e, n_max_t * 3:] = knn_test[s:e].float().reshape(e - s, -1)
+
+                    single_obs = x_flat[:1].to(eval_device)
+                    # Warmup
+                    with torch.no_grad():
+                        for _ in range(3):
+                            flow_net.sample((n_eval_samples,), condition=single_obs)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+
+                    # Benchmark: 50 runs
+                    n_bench = 50
+                    t_bench_start = time()
+                    with torch.no_grad():
+                        for _ in range(n_bench):
+                            flow_net.sample((n_eval_samples,), condition=single_obs)
+                    if torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    t_bench_end = time()
+
+                    bench_ms = (t_bench_end - t_bench_start) / n_bench * 1000
+                    print(f"    Single track ({n_eval_samples} samples): {bench_ms:.2f} ms")
+                    print(f"    Single track (1 sample):   {bench_ms / n_eval_samples:.2f} ms")
+                    del x_test, knn_test, x_flat, single_obs
+                except Exception as e:
+                    print(f"    Benchmark failed: {e}")
 
             # Save CSV results (17 columns: point estimates + posterior stats)
             eval_path = RESULTS_DIR / "eval_results.csv"
