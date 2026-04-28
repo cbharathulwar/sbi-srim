@@ -42,7 +42,8 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.utils.data_utils import preprocess_egnn
-from src.models.egnn import EGNNEmbedding, CachedEGNNEmbedding, DirectionHead, EnergyHead
+from src.models.egnn import (EGNNEmbedding, CachedEGNNEmbedding, DirectionHead, EnergyHead,
+                              ScalarAugmentedEmbedding)
 from src.models.vmf_loss import axis_aware_vmf_nll, gaussian_nll
 
 # SBI Imports (only for building the flow architecture)
@@ -59,6 +60,7 @@ RESULTS_DIR   = BASE_DIR / "results/gvp_egnn"
 # Output files
 CHECKPOINT_FILE  = RESULTS_DIR / "checkpoint.pt"
 BEST_CKPT_FILE   = RESULTS_DIR / "best_checkpoint.pt"
+BEST_S2_CKPT_FILE = RESULTS_DIR / "best_checkpoint_stage2.pt"
 TRAIN_LOG        = RESULTS_DIR / "training_log.csv"
 TB_LOG_DIR       = RESULTS_DIR / "tb_logs"
 
@@ -69,6 +71,8 @@ K_NEIGHBORS    = 16       # same
 N_HEADS        = 8        # same
 D_PROJ         = 48       # up from 32
 D_LATENT       = 384      # up from 256
+N_SCALAR_FEATS = 2        # scalar features appended to z in Stage 2 (n_vac, lateral_spread)
+D_AUG          = D_LATENT + N_SCALAR_FEATS  # augmented conditioning dim for Stage 2 flow
 V_DIM          = 8        # GVP vector channels
 NUM_TRANSFORMS = 8        # NSF coupling layers (was 12, reduced for speed)
 NSF_HIDDEN     = 192      # NSF hidden features (up from 128)
@@ -197,6 +201,26 @@ def build_flow(embedding_net, n_max, k, d_latent, device):
     return flow, cached_embedding
 
 
+def build_flow_from_embedding(aug_embedding, n_max, k, d_aug, device):
+    """Build a fresh NSF flow conditioned on an already-wrapped embedding.
+    Used for Stage 2 with ScalarAugmentedEmbedding (d_aug = D_LATENT + N_SCALAR_FEATS).
+    The embedding is NOT wrapped again — pass it directly as embedding_net."""
+    build_fn = posterior_nn(
+        model="nsf",
+        embedding_net=aug_embedding,
+        hidden_features=NSF_HIDDEN,
+        num_transforms=NUM_TRANSFORMS,
+        z_score_x="none",
+        z_score_theta="independent",
+    )
+    dummy_theta = torch.zeros(100, 4)
+    dummy_theta[:, 0] = torch.rand(100) * 105.0
+    dummy_theta[:, 1:4] = F.normalize(torch.randn(100, 3), dim=-1)
+    dummy_x = torch.randn(100, n_max * (3 + k))
+    flow = build_fn(dummy_theta, dummy_x)
+    return flow.to(device)
+
+
 def prepare_data(args, batch_size=BATCH_SIZE):
     """Load and preprocess training data, return dataloaders."""
     print("[DATA] Preprocessing training data (EGNN pipeline)...")
@@ -229,6 +253,21 @@ def prepare_data(args, batch_size=BATCH_SIZE):
         col = theta_train[:, j]
         print(f"        {name:8s}: min={col.min():.3f}  max={col.max():.3f}  "
               f"mean={col.mean():.3f}  std={col.std():.3f}")
+
+    # Compute scalar feature normalisation stats (before deleting x_padded/mask)
+    _n_vac   = mask.sum(dim=1).float()                              # (N,)
+    _yz      = x_padded[:, :, 1:]                                   # (N, N_max, 2)
+    _mf      = mask.float().unsqueeze(-1)
+    _yz_mean = (_yz * _mf).sum(dim=1) / _n_vac.unsqueeze(-1).clamp(min=1)
+    _yz_dev  = (_yz - _yz_mean.unsqueeze(1)) * _mf
+    _lat_var = (_yz_dev.pow(2) * _mf).sum(dim=(1, 2)) / _n_vac.clamp(min=1)
+    _log_nv  = torch.log(_n_vac + 1.0)
+    _log_lv  = torch.log(_lat_var + 1e-4)
+    scalar_mean = torch.stack([_log_nv.mean(), _log_lv.mean()])
+    scalar_std  = torch.stack([_log_nv.std().clamp(min=1e-8), _log_lv.std().clamp(min=1e-8)])
+    print(f"[DATA] Scalar stats: log_nvac={scalar_mean[0]:.3f}±{scalar_std[0]:.3f}  "
+          f"log_latvar={scalar_mean[1]:.3f}±{scalar_std[1]:.3f}")
+    del _n_vac, _yz, _mf, _yz_mean, _yz_dev, _lat_var, _log_nv, _log_lv
 
     # Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k)
     n_tracks = x_padded.shape[0]
@@ -271,7 +310,7 @@ def prepare_data(args, batch_size=BATCH_SIZE):
     print(f"[DATA] Train: {n_train:,} tracks ({len(train_loader)} batches)")
     print(f"[DATA] Val:   {n_val:,} tracks ({len(val_loader)} batches)")
 
-    return train_loader, val_loader, n_max
+    return train_loader, val_loader, n_max, scalar_mean, scalar_std
 
 
 def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
@@ -523,7 +562,7 @@ def main():
 
     # 1. Load data
     print(f"\n[STEP 1] Loading and preprocessing data...")
-    train_loader, val_loader, n_max = prepare_data(args, batch_size=batch_size)
+    train_loader, val_loader, n_max, scalar_mean, scalar_std = prepare_data(args, batch_size=batch_size)
 
     # 2. Build model components
     print(f"\n[STEP 2] Building GVP-EGNN + NSF flow...")
@@ -574,11 +613,10 @@ def main():
             sys.exit(1)
         print(f"\n[STAGE2-ONLY] Loading best checkpoint: {BEST_CKPT_FILE}")
         ckpt = torch.load(BEST_CKPT_FILE, map_location=device, weights_only=False)
-        flow.load_state_dict(ckpt['flow_state_dict'])
-        dir_head.load_state_dict(ckpt['dir_head_state_dict'])
-        energy_head.load_state_dict(ckpt['energy_head_state_dict'])
+        flow.load_state_dict(ckpt['flow_state_dict'])   # loads backbone weights too
         best_val_loss = ckpt['best_val_loss']
         print(f"[STAGE2-ONLY] Best val_loss from stage 1: {best_val_loss:.4f}")
+        print(f"[STAGE2-ONLY] dir_head / energy_head will be reinitialized with D_AUG={D_AUG}")
         del ckpt
 
     # Resume from checkpoint if requested
@@ -719,105 +757,161 @@ def main():
         print(f"{'='*60}")
 
     # ================================================================
-    # STAGE 2: Flow-only fine-tuning
+    # STAGE 2: Scalar-Augmented Flow Fine-Tuning
     # ================================================================
     print(f"\n{'='*60}")
-    print(f"  STAGE 2: Flow-Only Fine-Tuning ({STAGE2_EPOCHS} epochs)")
+    print(f"  STAGE 2: Scalar-Augmented Flow Fine-Tuning ({STAGE2_EPOCHS} epochs)")
+    print(f"  Backbone frozen. Flow + aux heads rebuilt with D_AUG={D_AUG}.")
     print(f"{'='*60}")
 
-    # Load best checkpoint from stage 1
-    best_ckpt = torch.load(BEST_CKPT_FILE, map_location=device,
-                            weights_only=False)
-    flow.load_state_dict(best_ckpt['flow_state_dict'])
-    dir_head.load_state_dict(best_ckpt['dir_head_state_dict'])
-    energy_head.load_state_dict(best_ckpt['energy_head_state_dict'])
-    print(f"  Loaded best stage 1 checkpoint (val_loss={best_val_loss:.4f})")
+    # Load best Stage 1 backbone weights (if not already loaded via --stage2-only)
+    if not args.stage2_only:
+        best_ckpt = torch.load(BEST_CKPT_FILE, map_location=device, weights_only=False)
+        flow.load_state_dict(best_ckpt['flow_state_dict'])   # restores backbone
+        print(f"  Loaded best stage 1 checkpoint (val_loss={best_val_loss:.4f})")
+        del best_ckpt
 
-    # Freeze backbone + auxiliary heads
+    # Freeze backbone
     for param in cached_embedding.embedding.parameters():
         param.requires_grad = False
-    for param in dir_head.parameters():
-        param.requires_grad = False
-    for param in energy_head.parameters():
-        param.requires_grad = False
+    print(f"  Backbone frozen ({sum(p.numel() for p in cached_embedding.embedding.parameters()):,} params)")
 
-    # Collect flow-only params (exclude frozen embedding)
-    flow_only_params = [p for p in flow.parameters() if p.requires_grad]
-    n_flow_params = sum(p.numel() for p in flow_only_params)
-    print(f"  Flow-only params: {n_flow_params:,} (backbone frozen)")
+    # Wrap frozen backbone with scalar feature augmentation
+    aug_embedding = ScalarAugmentedEmbedding(
+        cached_embedding, n_max=n_max,
+        scalar_mean=scalar_mean.to(device),
+        scalar_std=scalar_std.to(device),
+    )
 
-    optimizer_s2 = torch.optim.AdamW(flow_only_params, lr=STAGE2_LR_MAX,
+    # Build new flow conditioned on z_aug (D_AUG = D_LATENT + N_SCALAR_FEATS)
+    # Coupling layers start from random; backbone is frozen inside aug_embedding.
+    print(f"  Building new NSF flow with conditioning dim {D_AUG}...")
+    flow_s2 = build_flow_from_embedding(aug_embedding, n_max, K_NEIGHBORS, D_AUG, device)
+
+    # Fresh aux heads sized for D_AUG
+    dir_head_s2    = DirectionHead(d_latent=D_AUG).to(device)
+    energy_head_s2 = EnergyHead(d_latent=D_AUG).to(device)
+
+    # Trainable params: new flow coupling layers + new aux heads (backbone excluded)
+    s2_params = ([p for p in flow_s2.parameters() if p.requires_grad]
+                 + list(dir_head_s2.parameters())
+                 + list(energy_head_s2.parameters()))
+    print(f"  Trainable params (Stage 2): {sum(p.numel() for p in s2_params):,}")
+
+    optimizer_s2 = torch.optim.AdamW(s2_params, lr=STAGE2_LR_MAX,
                                       weight_decay=WEIGHT_DECAY)
 
-    best_val_loss_s2 = best_val_loss  # start from stage 1 best
+    best_val_loss_s2 = float('inf')   # flow starts fresh — don't compare to Stage 1 NLL
     epochs_no_improve_s2 = 0
     t_s2_start = time()
 
     for s2_epoch in range(STAGE2_EPOCHS):
         ep_start = time()
 
-        # LR schedule for stage 2
         lr = cosine_lr_with_warmup(s2_epoch, STAGE2_WARMUP, STAGE2_EPOCHS,
                                     STAGE2_LR_MAX, STAGE2_LR_MIN)
         for pg in optimizer_s2.param_groups:
             pg['lr'] = lr
 
-        # Train (flow loss only, no augmentation — backbone is frozen)
-        flow.train()
-        flow_loss_sum = 0.0
+        # ── Train ──
+        flow_s2.train()
+        dir_head_s2.train()
+        energy_head_s2.train()
+        flow_loss_sum = energy_loss_sum = dir_loss_sum = 0.0
         n_batches = 0
 
         for theta_batch, x_batch in train_loader:
             theta_batch = theta_batch.to(device)
-            x_batch = x_batch.to(device)
+            x_batch     = x_batch.to(device)
 
             optimizer_s2.zero_grad()
 
-            flow_nll = flow.loss(theta_batch, condition=x_batch)
-            flow_nll = flow_nll.clamp(max=LOSS_CLAMP)
+            flow_nll  = flow_s2.loss(theta_batch, condition=x_batch).clamp(max=LOSS_CLAMP)
             flow_loss = flow_nll.mean()
 
-            if not torch.isfinite(flow_loss):
+            z_aug = aug_embedding.last_z   # (B, D_AUG) — set by flow_s2.loss()
+
+            E_pred, log_sigma = energy_head_s2(z_aug)
+            e_nll  = gaussian_nll(E_pred, log_sigma, theta_batch[:, 0]).clamp(max=LOSS_CLAMP)
+            e_loss = e_nll.mean()
+
+            mu_hat, kappa = dir_head_s2(z_aug)
+            d_nll  = axis_aware_vmf_nll(mu_hat, kappa, theta_batch[:, 1:4]).clamp(max=LOSS_CLAMP)
+            d_loss = d_nll.mean()
+
+            total = flow_loss + BETA_END * e_loss + ALPHA_END * d_loss
+            if not torch.isfinite(total):
                 continue
 
-            flow_loss.backward()
-            torch.nn.utils.clip_grad_norm_(flow_only_params,
-                                            max_norm=STAGE2_GRAD_CLIP)
+            total.backward()
+            torch.nn.utils.clip_grad_norm_(s2_params, max_norm=STAGE2_GRAD_CLIP)
             optimizer_s2.step()
 
-            flow_loss_sum += flow_loss.item()
+            flow_loss_sum   += flow_loss.item()
+            energy_loss_sum += e_loss.item()
+            dir_loss_sum    += d_loss.item()
             n_batches += 1
 
-        train_flow = flow_loss_sum / max(n_batches, 1)
+        train_flow = flow_loss_sum   / max(n_batches, 1)
+        train_e    = energy_loss_sum / max(n_batches, 1)
+        train_d    = dir_loss_sum    / max(n_batches, 1)
 
-        # Validate
-        val_metrics = validate(
-            flow, cached_embedding, dir_head, energy_head,
-            val_loader, device, s2_epoch, STAGE2_EPOCHS
-        )
-        val_flow = val_metrics['flow']
+        # ── Validate ──
+        flow_s2.eval()
+        dir_head_s2.eval()
+        energy_head_s2.eval()
+        vf_sum = ve_sum = vd_sum = 0
+        vn = 0
+        with torch.no_grad():
+            for theta_batch, x_batch in val_loader:
+                theta_batch = theta_batch.to(device)
+                x_batch     = x_batch.to(device)
+                vfl = flow_s2.loss(theta_batch, condition=x_batch).clamp(max=LOSS_CLAMP).mean()
+                z_aug = aug_embedding.last_z
+                ep, ls = energy_head_s2(z_aug)
+                vel = gaussian_nll(ep, ls, theta_batch[:, 0]).clamp(max=LOSS_CLAMP).mean()
+                mh, kp = dir_head_s2(z_aug)
+                vdl = axis_aware_vmf_nll(mh, kp, theta_batch[:, 1:4]).clamp(max=LOSS_CLAMP).mean()
+                if torch.isfinite(vfl + vel + vdl):
+                    vf_sum += vfl.item(); ve_sum += vel.item(); vd_sum += vdl.item(); vn += 1
+
+        val_flow = vf_sum / max(vn, 1)
+        val_e    = ve_sum / max(vn, 1)
 
         ep_sec = time() - ep_start
         print(f"  S2 Epoch {s2_epoch}/{STAGE2_EPOCHS} | "
-              f"train_flow={train_flow:.4f} val_flow={val_flow:.4f} | "
-              f"lr={lr:.1e} | {ep_sec:.0f}s", flush=True)
+              f"flow={train_flow:.4f}/{val_flow:.4f}  E={train_e:.3f}/{val_e:.3f}  "
+              f"dir={train_d:.3f} | lr={lr:.1e} | {ep_sec:.0f}s", flush=True)
 
-        # Early stopping on flow loss
         if math.isfinite(val_flow) and val_flow < best_val_loss_s2:
             best_val_loss_s2 = val_flow
             epochs_no_improve_s2 = 0
-            # Save best stage 2 checkpoint
-            save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                          optimizer_s2, s2_epoch, val_metrics,
-                          best_val_loss_s2, BEST_CKPT_FILE)
-            print(f"  [SAVE] New best (stage 2): val_flow={val_flow:.4f}")
+            # Save: use flow_s2 + new aux heads; store scalar stats for inference
+            torch.save({
+                'epoch': s2_epoch,
+                'flow_state_dict':        flow_s2.state_dict(),
+                'dir_head_state_dict':    dir_head_s2.state_dict(),
+                'energy_head_state_dict': energy_head_s2.state_dict(),
+                'optimizer_state_dict':   optimizer_s2.state_dict(),
+                'val_metrics': {'flow': val_flow, 'energy': val_e},
+                'best_val_loss': best_val_loss_s2,
+                'flow_module':   flow_s2,          # full object for posterior building
+                'scalar_mean':   scalar_mean,
+                'scalar_std':    scalar_std,
+                'n_scalar_feats': N_SCALAR_FEATS,
+            }, BEST_S2_CKPT_FILE)
+            print(f"  [SAVE] New best S2 → {BEST_S2_CKPT_FILE.name} (val_flow={val_flow:.4f})")
         else:
             epochs_no_improve_s2 += 1
 
         if epochs_no_improve_s2 >= STAGE2_PATIENCE:
-            print(f"\n  [STOP] Stage 2: No improvement for "
-                  f"{STAGE2_PATIENCE} epochs.")
+            print(f"\n  [STOP] Stage 2: No improvement for {STAGE2_PATIENCE} epochs.")
             break
+
+    # Alias so the posterior-building code below can use flow_s2 / new aux heads
+    flow        = flow_s2
+    dir_head    = dir_head_s2
+    energy_head = energy_head_s2
 
     s2_min = (time() - t_s2_start) / 60
     total_min = (time() - t_start) / 60
@@ -828,23 +922,20 @@ def main():
     print(f"  Stage 2 best val_flow: {best_val_loss_s2:.4f}")
     print(f"  Stage 1 time: {stage1_min:.1f} min | Stage 2 time: {s2_min:.1f} min")
     print(f"  Total time:   {total_min:.1f} min")
-    print(f"  Checkpoints:  {BEST_CKPT_FILE}")
+    print(f"  Stage 1 ckpt: {BEST_CKPT_FILE}")
+    print(f"  Stage 2 ckpt: {BEST_S2_CKPT_FILE}")
     print(f"  Log:          {TRAIN_LOG}")
     print(f"{'='*60}")
 
-    # Unfreeze everything (for posterior building)
-    for param in cached_embedding.embedding.parameters():
-        param.requires_grad = True
-    for param in dir_head.parameters():
-        param.requires_grad = True
-    for param in energy_head.parameters():
-        param.requires_grad = True
+    # (backbone stays frozen; flow_s2 / aux heads are already unfrozen)
 
     # 5. Build SBI posterior from best checkpoint (for eval compatibility)
-    print("\n[STEP 4] Building SBI posterior from best checkpoint...")
+    # Prefer Stage 2 checkpoint if it exists, otherwise fall back to Stage 1.
+    posterior_ckpt_file = BEST_S2_CKPT_FILE if BEST_S2_CKPT_FILE.exists() else BEST_CKPT_FILE
+    print(f"\n[STEP 4] Building SBI posterior from {posterior_ckpt_file.name}...")
     posterior = None
     try:
-        best_ckpt = torch.load(BEST_CKPT_FILE, map_location='cpu',
+        best_ckpt = torch.load(posterior_ckpt_file, map_location='cpu',
                                weights_only=False)
         best_flow = best_ckpt['flow_module']
 
@@ -866,7 +957,7 @@ def main():
         print(f"[WARN] Could not build posterior: {e}")
         import traceback
         traceback.print_exc()
-        print(f"       Best checkpoint is still available at {BEST_CKPT_FILE}")
+        print(f"       Best checkpoint is still available at {posterior_ckpt_file}")
 
     # 6. Run evaluation if eval data exists and posterior was built
     if posterior is None:
@@ -1017,10 +1108,13 @@ def main():
                 diag_idx = torch.randperm(n_ev)[:n_diag]
                 theta_diag = theta_eval[diag_idx]
                 x_diag = x_eval_flat[diag_idx]
-                n_sbc_samples = 100 if args.smoke else 500
+                # SBC: N/B rule of thumb requires N/B ≈ 20, where B = n_sbc_samples + 1
+                # With n_diag=500 observations, n_sbc_samples=25 gives N/B = 500/26 ≈ 19
+                n_sbc_samples = 50 if args.smoke else 25
+                n_tarp_samples = 100 if args.smoke else 500  # TARP doesn't have the N/B constraint
 
                 # --- SBC (Simulation-Based Calibration) ---
-                print(f"  Running SBC on {n_diag} tracks, {n_sbc_samples} posterior samples each...")
+                print(f"  Running SBC on {n_diag} tracks, {n_sbc_samples} posterior samples each (N/B≈{n_diag/(n_sbc_samples+1):.0f})...")
                 try:
                     ranks, dap_samples = run_sbc(
                         theta_diag, x_diag, posterior,
@@ -1060,11 +1154,11 @@ def main():
                     print(f"  [WARN] SBC failed: {e}")
 
                 # --- TARP (Tests of Accuracy with Random Points) ---
-                print(f"\n  Running TARP on {n_diag} tracks...")
+                print(f"\n  Running TARP on {n_diag} tracks, {n_tarp_samples} posterior samples each...")
                 try:
                     ecp, alpha = run_tarp(
                         theta_diag, x_diag, posterior,
-                        num_posterior_samples=n_sbc_samples,
+                        num_posterior_samples=n_tarp_samples,
                         use_batched_sampling=True,
                         show_progress_bar=True,
                     )

@@ -795,3 +795,63 @@ class CachedEGNNEmbedding(nn.Module):
         z = self.embedding(x_flat)
         self.last_z = z
         return z
+
+
+# ============================================================
+# Scalar-Augmented Embedding (for Stage 2 energy improvement)
+# ============================================================
+
+class ScalarAugmentedEmbedding(nn.Module):
+    """
+    Wraps a frozen CachedEGNNEmbedding and appends two physics scalar
+    features to the latent z, enriching the flow conditioning with
+    energy-informative statistics that the backbone alone doesn't expose:
+
+      Feature 0: log(n_vac + 1)          — vacancy count (E ∝ N)
+      Feature 1: log(lateral_spread + ε) — transverse straggling
+
+    Both features are computed directly from x_flat (PCA-aligned coords)
+    and normalized using training-set mean/std.  The backbone is expected
+    to be frozen before this wrapper is constructed.
+
+    Output dim: D_LATENT + 2  (drop-in for CachedEGNNEmbedding in build_flow)
+    """
+
+    def __init__(self, base_embedding: CachedEGNNEmbedding,
+                 n_max: int,
+                 scalar_mean: torch.Tensor,
+                 scalar_std: torch.Tensor):
+        super().__init__()
+        self.base = base_embedding          # frozen backbone
+        self.n_max = n_max
+        self.register_buffer('scalar_mean', scalar_mean.float())
+        self.register_buffer('scalar_std',  scalar_std.float())
+        self.last_z = None
+
+    def forward(self, x_flat: torch.Tensor) -> torch.Tensor:
+        z = self.base(x_flat)               # (B, D_LATENT)  — no grad through backbone
+
+        B = x_flat.shape[0]
+        coords = x_flat[:, :self.n_max * 3].view(B, self.n_max, 3)
+        mask   = coords.abs().sum(dim=-1) > 0.0            # (B, N_max)
+
+        n_vac  = mask.sum(dim=1).float()                   # (B,)
+
+        # Lateral spread: variance of y, z in PCA-aligned normalised coords
+        yz      = coords[:, :, 1:]                         # (B, N_max, 2)
+        mask_f  = mask.float().unsqueeze(-1)               # (B, N_max, 1)
+        yz_mean = (yz * mask_f).sum(dim=1) / n_vac.unsqueeze(-1).clamp(min=1)
+        yz_dev  = (yz - yz_mean.unsqueeze(1)) * mask_f
+        lat_var = (yz_dev.pow(2) * mask_f).sum(dim=(1, 2)) / n_vac.clamp(min=1)
+
+        sf = torch.stack([
+            torch.log(n_vac  + 1.0),
+            torch.log(lat_var + 1e-4),
+        ], dim=-1)                                         # (B, 2)
+
+        sf = (sf - self.scalar_mean) / self.scalar_std.clamp(min=1e-8)
+
+        z_aug = torch.cat([z, sf], dim=-1)                 # (B, D_LATENT + 2)
+        self.last_z = z_aug
+        self.base.last_z = z_aug                           # keep aux-head cache in sync
+        return z_aug
