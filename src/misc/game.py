@@ -36,97 +36,114 @@ ENERGY_SLIDER_RES = 1000
 # ===============================
 # Theme
 # ===============================
+# Refined neutral palette inspired by Linear/Notion/Stripe.
+# One muted accent (slate-blue), restrained borders, no glow effects.
 MODERN_THEME = """
 QWidget {
-    background-color: #0f1419;
-    color: #e0e0e0;
-    font-family: -apple-system, 'SF Pro Display', 'Segoe UI', sans-serif;
-    font-size: 14px;
+    background-color: #0d0d0f;
+    color: #d4d4d6;
+    font-family: -apple-system, 'SF Pro Text', 'Inter', 'Segoe UI', sans-serif;
+    font-size: 13px;
 }
 QGroupBox {
-    border: 2px solid #1f4e5a;
-    border-radius: 10px;
-    margin-top: 18px;
-    font-weight: bold;
-    font-size: 15px;
-    color: #00d4e0;
-    padding-top: 12px;
+    border: 1px solid #232328;
+    border-radius: 6px;
+    margin-top: 14px;
+    font-weight: 500;
+    font-size: 11px;
+    color: #8b8b94;
+    padding-top: 10px;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
     subcontrol-position: top left;
-    left: 12px;
-    padding: 0 8px;
-    background-color: #0f1419;
+    left: 10px;
+    padding: 0 6px;
+    background-color: #0d0d0f;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
 QPushButton {
-    background-color: #1f2937;
-    border: 1px solid #374151;
-    border-radius: 8px;
-    padding: 12px;
-    font-weight: bold;
-    font-size: 14px;
-    color: #e0e0e0;
+    background-color: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 6px;
+    padding: 9px 14px;
+    font-weight: 500;
+    font-size: 13px;
+    color: #d4d4d6;
 }
 QPushButton:hover {
-    background-color: #2d3748;
-    border: 1px solid #00d4e0;
+    background-color: #1f1f23;
+    border: 1px solid #3f3f46;
     color: #ffffff;
 }
 QPushButton:pressed {
-    background-color: #00d4e0;
-    color: #000000;
+    background-color: #27272a;
 }
 QPushButton:disabled {
-    background-color: #1a1f24;
-    color: #4a5568;
-    border: 1px solid #2d3748;
+    background-color: #131316;
+    color: #4a4a50;
+    border: 1px solid #1d1d20;
 }
 QLineEdit, QSpinBox {
-    background-color: #1f2937;
-    border: 1px solid #374151;
-    padding: 8px;
+    background-color: #131316;
+    border: 1px solid #27272a;
+    padding: 8px 10px;
     border-radius: 6px;
-    color: white;
-    font-size: 15px;
+    color: #ffffff;
+    font-size: 13px;
+    selection-background-color: #3b3b40;
+}
+QLineEdit:focus, QSpinBox:focus {
+    border: 1px solid #6366f1;
 }
 QSlider::groove:horizontal {
-    border: 1px solid #2d3748;
-    height: 10px;
-    background: #1a1f24;
-    border-radius: 5px;
+    border: none;
+    height: 4px;
+    background: #232328;
+    border-radius: 2px;
 }
 QSlider::handle:horizontal {
-    background: #00d4e0;
-    width: 22px;
-    margin: -7px 0;
-    border-radius: 11px;
-    border: 2px solid #0f1419;
+    background: #d4d4d6;
+    width: 14px;
+    height: 14px;
+    margin: -5px 0;
+    border-radius: 7px;
+    border: none;
 }
 QSlider::handle:horizontal:hover {
-    background: #4be6f0;
-    width: 24px;
-    margin: -8px 0;
-    border-radius: 12px;
+    background: #ffffff;
 }
 QSlider::sub-page:horizontal {
-    background: #00d4e0;
-    border-radius: 5px;
+    background: #6366f1;
+    border-radius: 2px;
 }
 QTableWidget {
-    background-color: #1f2937;
-    border: none;
-    gridline-color: #2d3748;
-    font-size: 15px;
+    background-color: #131316;
+    border: 1px solid #232328;
+    border-radius: 6px;
+    gridline-color: #1d1d20;
+    font-size: 13px;
+}
+QTableWidget::item {
+    padding: 8px;
+}
+QTableWidget::item:selected {
+    background-color: #1f1f23;
+    color: #ffffff;
 }
 QHeaderView::section {
-    background-color: #0f1419;
-    padding: 8px;
-    border: 1px solid #2d3748;
-    font-weight: bold;
-    color: #00d4e0;
+    background-color: #0d0d0f;
+    padding: 10px;
+    border: none;
+    border-bottom: 1px solid #232328;
+    font-weight: 500;
+    font-size: 11px;
+    color: #8b8b94;
+    text-transform: uppercase;
+    letter-spacing: 1px;
 }
-QLabel { color: #e0e0e0; }
+QLabel { color: #d4d4d6; }
 """
 
 
@@ -249,69 +266,67 @@ class VectorGame(QWidget):
         self.start_screen = QWidget()
         layout = QVBoxLayout(self.start_screen)
         layout.setAlignment(Qt.AlignCenter)
-        layout.setSpacing(20)
+        layout.setSpacing(28)
 
-        # Big title
-        title = QLabel("HUMAN vs. AI")
-        title.setStyleSheet("font-size: 64px; font-weight: 900; color: #00d4e0; "
-                            "letter-spacing: 4px; margin-top: 40px;")
+        eyebrow = QLabel("Direction Reconstruction Challenge")
+        eyebrow.setStyleSheet("font-size: 11px; color: #6366f1; "
+                              "letter-spacing: 2px; text-transform: uppercase; "
+                              "font-weight: 500; margin-top: 60px;")
+        eyebrow.setAlignment(Qt.AlignCenter)
+        layout.addWidget(eyebrow)
+
+        title = QLabel("Human vs. Model")
+        title.setStyleSheet("font-size: 44px; font-weight: 600; color: #ffffff; "
+                            "letter-spacing: -1px;")
         title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
 
-        subtitle = QLabel("3D Nuclear Recoil Direction Challenge")
-        subtitle.setStyleSheet("font-size: 22px; color: #e0e0e0; "
-                               "letter-spacing: 1px; margin-bottom: 10px;")
-        subtitle.setAlignment(Qt.AlignCenter)
-        layout.addWidget(subtitle)
-
-        # Description box
         desc = QLabel(
-            "<center>"
-            "Look at a 3D point cloud of crystal damage.<br>"
-            "Guess the direction of the incoming particle and its energy.<br><br>"
-            "<span style='color:#00d4e0; font-weight:bold;'>Can you beat the neural network?</span>"
-            "</center>"
+            "Inspect a 3D point cloud of vacancies left by a nuclear recoil. "
+            "Estimate the incoming direction and its kinetic energy. "
+            "Compare your guess against a trained graph neural network."
         )
-        desc.setStyleSheet("font-size: 16px; color: #b0b0b0; padding: 18px; "
-                           "background-color: #1a1f24; border-radius: 10px; "
-                           "border: 1px solid #2d3748; max-width: 600px;")
-        desc.setFixedWidth(600)
+        desc.setStyleSheet("font-size: 14px; color: #8b8b94; line-height: 1.6;")
+        desc.setAlignment(Qt.AlignCenter)
+        desc.setWordWrap(True)
+        desc.setFixedWidth(540)
         layout.addWidget(desc, alignment=Qt.AlignCenter)
 
         # Form
         form_widget = QFrame()
-        form_widget.setStyleSheet("QFrame { background-color: #1a1f24; "
-                                  "border-radius: 10px; padding: 20px; }")
-        form_widget.setFixedWidth(420)
+        form_widget.setStyleSheet("QFrame { background-color: transparent; }")
+        form_widget.setFixedWidth(360)
         form = QFormLayout(form_widget)
-        form.setSpacing(12)
+        form.setSpacing(14)
+        form.setContentsMargins(0, 12, 0, 0)
 
         self.name_input = QLineEdit()
-        self.name_input.setPlaceholderText("Enter your name...")
-        self.name_input.setFixedHeight(36)
+        self.name_input.setPlaceholderText("Your name")
+        self.name_input.setFixedHeight(38)
 
         self.rounds_input = QSpinBox()
         self.rounds_input.setRange(1, 20)
         self.rounds_input.setValue(5)
-        self.rounds_input.setFixedHeight(36)
+        self.rounds_input.setFixedHeight(38)
 
-        name_lbl = QLabel("Player Name:")
-        name_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #00d4e0;")
-        rounds_lbl = QLabel("Tracks per Game:")
-        rounds_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #00d4e0;")
+        name_lbl = QLabel("Name")
+        name_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
+        rounds_lbl = QLabel("Tracks")
+        rounds_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
 
         form.addRow(name_lbl, self.name_input)
         form.addRow(rounds_lbl, self.rounds_input)
 
         layout.addWidget(form_widget, alignment=Qt.AlignCenter)
 
-        start_btn = QPushButton("▶  START CHALLENGE")
-        start_btn.setFixedSize(280, 56)
+        start_btn = QPushButton("Begin")
+        start_btn.setFixedSize(200, 42)
         start_btn.setStyleSheet(
-            "QPushButton { background-color: #00d4e0; color: #000000; "
-            "font-size: 18px; font-weight: bold; border-radius: 28px; "
-            "letter-spacing: 2px; }"
-            "QPushButton:hover { background-color: #4be6f0; }"
+            "QPushButton { background-color: #6366f1; color: #ffffff; "
+            "font-size: 14px; font-weight: 500; border-radius: 6px; "
+            "border: none; }"
+            "QPushButton:hover { background-color: #5558e3; }"
+            "QPushButton:pressed { background-color: #4f51d9; }"
         )
         start_btn.clicked.connect(self.start_game)
         layout.addWidget(start_btn, alignment=Qt.AlignCenter)
@@ -322,73 +337,79 @@ class VectorGame(QWidget):
     def build_game_screen(self):
         self.game_screen = QWidget()
         outer = QHBoxLayout(self.game_screen)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(12)
+        outer.setContentsMargins(20, 20, 20, 20)
+        outer.setSpacing(20)
 
         # ── Left Panel (Controls) ──
         left_panel = QWidget()
-        left_panel.setFixedWidth(420)
+        left_panel.setFixedWidth(380)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setSpacing(10)
+        left_layout.setSpacing(20)
+        left_layout.setContentsMargins(4, 4, 4, 4)
 
-        # Big HUD scoreboard
+        # HUD: simple track counter + inline scores
         hud_frame = QFrame()
-        hud_frame.setStyleSheet("QFrame { background-color: #1a1f24; "
-                                "border-radius: 12px; border: 2px solid #1f4e5a; "
-                                "padding: 14px; }")
         hud_layout = QVBoxLayout(hud_frame)
-        hud_layout.setSpacing(6)
+        hud_layout.setSpacing(14)
+        hud_layout.setContentsMargins(0, 0, 0, 0)
 
-        self.track_label = QLabel("Track 1 / 5")
-        self.track_label.setStyleSheet("font-size: 22px; font-weight: bold; "
-                                       "color: #00d4e0; letter-spacing: 1px;")
-        self.track_label.setAlignment(Qt.AlignCenter)
+        self.track_label = QLabel("Track 1 of 5")
+        self.track_label.setStyleSheet("font-size: 12px; color: #6366f1; "
+                                       "letter-spacing: 1px; text-transform: uppercase; "
+                                       "font-weight: 500;")
         hud_layout.addWidget(self.track_label)
 
         score_row = QHBoxLayout()
-        self.human_score_label = QLabel("YOU\n0")
-        self.human_score_label.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #00ff88; "
-            "background-color: #0f1419; padding: 10px; border-radius: 8px;"
-        )
-        self.human_score_label.setAlignment(Qt.AlignCenter)
-        self.ai_score_label = QLabel("AI\n0")
-        self.ai_score_label.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #ff5555; "
-            "background-color: #0f1419; padding: 10px; border-radius: 8px;"
-        )
-        self.ai_score_label.setAlignment(Qt.AlignCenter)
-        score_row.addWidget(self.human_score_label, stretch=1)
-        score_row.addWidget(self.ai_score_label, stretch=1)
+        score_row.setSpacing(20)
+
+        you_col = QVBoxLayout()
+        you_col.setSpacing(2)
+        you_label = QLabel("You")
+        you_label.setStyleSheet("font-size: 11px; color: #6b6b72; "
+                                "text-transform: uppercase; letter-spacing: 1px;")
+        self.human_score_label = QLabel("0")
+        self.human_score_label.setStyleSheet("font-size: 28px; color: #ffffff; "
+                                             "font-weight: 600;")
+        you_col.addWidget(you_label)
+        you_col.addWidget(self.human_score_label)
+        score_row.addLayout(you_col)
+
+        ai_col = QVBoxLayout()
+        ai_col.setSpacing(2)
+        ai_label = QLabel("Model")
+        ai_label.setStyleSheet("font-size: 11px; color: #6b6b72; "
+                               "text-transform: uppercase; letter-spacing: 1px;")
+        self.ai_score_label = QLabel("0")
+        self.ai_score_label.setStyleSheet("font-size: 28px; color: #8b8b94; "
+                                          "font-weight: 600;")
+        ai_col.addWidget(ai_label)
+        ai_col.addWidget(self.ai_score_label)
+        score_row.addLayout(ai_col)
+
+        score_row.addStretch()
         hud_layout.addLayout(score_row)
+
+        # Subtle divider
+        divider = QFrame()
+        divider.setFrameShape(QFrame.HLine)
+        divider.setStyleSheet("color: #232328; background-color: #232328; "
+                              "max-height: 1px;")
+        hud_layout.addWidget(divider)
 
         left_layout.addWidget(hud_frame)
 
-        # Big primary hint
-        self.hint_banner = QLabel(
-            "💡  Click any blue dot to aim your arrow"
-        )
-        self.hint_banner.setStyleSheet(
-            "font-size: 16px; font-weight: bold; color: #ffd700; "
-            "background-color: #2d2410; padding: 12px; border-radius: 8px; "
-            "border: 1px solid #5a4a10;"
-        )
-        self.hint_banner.setAlignment(Qt.AlignCenter)
-        self.hint_banner.setWordWrap(True)
-        left_layout.addWidget(self.hint_banner)
-
         # Direction controls
-        dir_group = QGroupBox("1. AIM YOUR DIRECTION")
+        dir_group = QGroupBox("Direction")
         dir_layout = QVBoxLayout()
-        dir_layout.setSpacing(8)
+        dir_layout.setSpacing(12)
+        dir_layout.setContentsMargins(0, 8, 0, 4)
 
-        # Show numeric values
         elev_row = QHBoxLayout()
-        elev_lbl = QLabel("Up/Down")
-        elev_lbl.setStyleSheet("font-size: 13px; color: #a0a0a0;")
+        elev_lbl = QLabel("Elevation")
+        elev_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
         self.elev_value_label = QLabel("0°")
-        self.elev_value_label.setStyleSheet("font-size: 13px; color: #00d4e0; "
-                                            "font-weight: bold;")
+        self.elev_value_label.setStyleSheet("font-size: 13px; color: #ffffff; "
+                                            "font-weight: 500;")
         self.elev_value_label.setAlignment(Qt.AlignRight)
         elev_row.addWidget(elev_lbl)
         elev_row.addWidget(self.elev_value_label)
@@ -402,11 +423,11 @@ class VectorGame(QWidget):
         dir_layout.addWidget(self.elev_slider)
 
         azim_row = QHBoxLayout()
-        azim_lbl = QLabel("Left/Right")
-        azim_lbl.setStyleSheet("font-size: 13px; color: #a0a0a0;")
+        azim_lbl = QLabel("Azimuth")
+        azim_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
         self.azim_value_label = QLabel("0°")
-        self.azim_value_label.setStyleSheet("font-size: 13px; color: #00d4e0; "
-                                            "font-weight: bold;")
+        self.azim_value_label.setStyleSheet("font-size: 13px; color: #ffffff; "
+                                            "font-weight: 500;")
         self.azim_value_label.setAlignment(Qt.AlignRight)
         azim_row.addWidget(azim_lbl)
         azim_row.addWidget(self.azim_value_label)
@@ -419,26 +440,27 @@ class VectorGame(QWidget):
             lambda v: self.azim_value_label.setText(f"{v}°"))
         dir_layout.addWidget(self.azim_slider)
 
+        # Subtle inline hint
+        hint = QLabel("Or click a vacancy to aim")
+        hint.setStyleSheet("font-size: 12px; color: #5a5a60; font-style: italic; "
+                           "padding-top: 4px;")
+        dir_layout.addWidget(hint)
+
         dir_group.setLayout(dir_layout)
         left_layout.addWidget(dir_group)
 
         # Energy controls
-        eng_group = QGroupBox("2. GUESS THE ENERGY")
+        eng_group = QGroupBox("Energy")
         eng_layout = QVBoxLayout()
-        eng_layout.setSpacing(8)
-
-        self.energy_hint_label = QLabel("More vacancies = higher energy")
-        self.energy_hint_label.setStyleSheet(
-            "font-size: 12px; color: #a0a0a0; font-style: italic;")
-        self.energy_hint_label.setWordWrap(True)
-        eng_layout.addWidget(self.energy_hint_label)
+        eng_layout.setSpacing(12)
+        eng_layout.setContentsMargins(0, 8, 0, 4)
 
         eng_row = QHBoxLayout()
-        eng_label_text = QLabel("Energy:")
-        eng_label_text.setStyleSheet("font-size: 13px; color: #a0a0a0;")
+        eng_label_text = QLabel("Estimate")
+        eng_label_text.setStyleSheet("font-size: 13px; color: #8b8b94;")
         self.energy_value_label = QLabel("10.0 keV")
-        self.energy_value_label.setStyleSheet(
-            "font-size: 18px; color: #00d4e0; font-weight: bold;")
+        self.energy_value_label.setStyleSheet("font-size: 13px; color: #ffffff; "
+                                              "font-weight: 500;")
         self.energy_value_label.setAlignment(Qt.AlignRight)
         eng_row.addWidget(eng_label_text)
         eng_row.addWidget(self.energy_value_label)
@@ -450,35 +472,31 @@ class VectorGame(QWidget):
         self.energy_slider.valueChanged.connect(self.on_energy_slider)
         eng_layout.addWidget(self.energy_slider)
 
-        # Energy scale ticks
-        scale_row = QHBoxLayout()
-        for tick in [5, 10, 30, 100]:
-            t = QLabel(f"{tick}")
-            t.setStyleSheet("font-size: 11px; color: #4a5568;")
-            t.setAlignment(Qt.AlignCenter)
-            scale_row.addWidget(t)
-        eng_layout.addLayout(scale_row)
+        self.energy_hint_label = QLabel("Higher vacancy counts indicate higher energy")
+        self.energy_hint_label.setStyleSheet(
+            "font-size: 12px; color: #5a5a60; font-style: italic; padding-top: 4px;")
+        self.energy_hint_label.setWordWrap(True)
+        eng_layout.addWidget(self.energy_hint_label)
 
         eng_group.setLayout(eng_layout)
         left_layout.addWidget(eng_group)
 
         # Action buttons
         btn_row = QHBoxLayout()
-        self.reset_btn = QPushButton("↺  Reset")
-        self.reset_btn.setFixedHeight(48)
-        self.reset_btn.setStyleSheet(
-            "QPushButton { background-color: #2d3748; font-size: 14px; }"
-            "QPushButton:hover { background-color: #4a5568; }"
-        )
+        btn_row.setSpacing(8)
+
+        self.reset_btn = QPushButton("Reset")
+        self.reset_btn.setFixedHeight(40)
         self.reset_btn.clicked.connect(self.reset_aim)
         btn_row.addWidget(self.reset_btn, stretch=1)
 
-        self.action_btn = QPushButton("LOCK IN GUESS")
-        self.action_btn.setFixedHeight(48)
+        self.action_btn = QPushButton("Submit")
+        self.action_btn.setFixedHeight(40)
         self.action_btn.setStyleSheet(
-            "QPushButton { background-color: #ef4444; color: white; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #f87171; }"
+            "QPushButton { background-color: #6366f1; color: #ffffff; "
+            "border: none; font-weight: 500; }"
+            "QPushButton:hover { background-color: #5558e3; }"
+            "QPushButton:pressed { background-color: #4f51d9; }"
         )
         self.action_btn.clicked.connect(self.handle_action)
         btn_row.addWidget(self.action_btn, stretch=2)
@@ -486,25 +504,29 @@ class VectorGame(QWidget):
         left_layout.addLayout(btn_row)
 
         # Feedback panel
-        self.feedback_label = QLabel("Analyze the track and lock in your guess.")
+        self.feedback_label = QLabel("Aim your direction and submit when ready.")
         self.feedback_label.setWordWrap(True)
         self.feedback_label.setStyleSheet(
-            "font-size: 13px; padding: 14px; background-color: #1a1f24; "
-            "border-radius: 8px; border: 1px solid #2d3748; color: #b0b0b0;"
+            "font-size: 13px; padding: 14px; background-color: #131316; "
+            "border-radius: 6px; border: 1px solid #232328; color: #8b8b94; "
+            "line-height: 1.5;"
         )
-        self.feedback_label.setMinimumHeight(140)
+        self.feedback_label.setMinimumHeight(160)
         left_layout.addWidget(self.feedback_label)
 
-        # Help button at bottom
+        # Help link at bottom
         help_row = QHBoxLayout()
-        self.info_btn = QPushButton("?  Help")
-        self.info_btn.setFixedHeight(34)
+        self.info_btn = QPushButton("How to play")
+        self.info_btn.setFixedHeight(28)
         self.info_btn.setStyleSheet(
-            "QPushButton { background-color: #1a1f24; color: #00d4e0; "
-            "font-size: 12px; }"
+            "QPushButton { background-color: transparent; color: #6b6b72; "
+            "font-size: 12px; border: none; padding: 4px; text-align: left; }"
+            "QPushButton:hover { color: #ffffff; background-color: transparent; "
+            "border: none; }"
         )
         self.info_btn.clicked.connect(self.show_instructions)
         help_row.addWidget(self.info_btn)
+        help_row.addStretch()
         left_layout.addLayout(help_row)
 
         left_layout.addStretch()
@@ -513,13 +535,13 @@ class VectorGame(QWidget):
         # ── Right Panel (3D Plot) ──
         plot_container = QFrame()
         plot_container.setStyleSheet(
-            "QFrame { background-color: #0f1419; border-radius: 12px; "
-            "border: 2px solid #1f4e5a; }"
+            "QFrame { background-color: #131316; border-radius: 8px; "
+            "border: 1px solid #232328; }"
         )
         plot_layout = QVBoxLayout(plot_container)
         plot_layout.setContentsMargins(8, 8, 8, 8)
 
-        self.figure = Figure(facecolor='#0f1419')
+        self.figure = Figure(facecolor='#131316')
         self.canvas = FigureCanvas(self.figure)
         self.canvas.mpl_connect('pick_event', self.on_pick)
         plot_layout.addWidget(self.canvas)
@@ -535,23 +557,24 @@ class VectorGame(QWidget):
         layout.setAlignment(Qt.AlignCenter)
         layout.setSpacing(20)
 
-        title = QLabel("GAME OVER")
-        title.setStyleSheet("font-size: 56px; font-weight: 900; color: #00d4e0; "
-                            "letter-spacing: 6px; margin-top: 30px;")
-        title.setAlignment(Qt.AlignCenter)
-        layout.addWidget(title)
+        eyebrow = QLabel("Final result")
+        eyebrow.setStyleSheet("font-size: 11px; color: #6366f1; "
+                              "letter-spacing: 2px; text-transform: uppercase; "
+                              "font-weight: 500; margin-top: 60px;")
+        eyebrow.setAlignment(Qt.AlignCenter)
+        layout.addWidget(eyebrow)
 
         self.final_score_label = QLabel("")
         self.final_score_label.setStyleSheet(
-            "font-size: 24px; padding: 16px; background-color: #1a1f24; "
-            "border-radius: 10px; border: 2px solid #1f4e5a;")
+            "font-size: 18px; color: #d4d4d6; line-height: 1.6;")
         self.final_score_label.setAlignment(Qt.AlignCenter)
         self.final_score_label.setFixedWidth(500)
         layout.addWidget(self.final_score_label, alignment=Qt.AlignCenter)
 
-        lb_title = QLabel("🏆  TOP 10 LEADERBOARD")
-        lb_title.setStyleSheet("font-size: 22px; font-weight: bold; "
-                               "color: #ffd700; margin-top: 10px;")
+        lb_title = QLabel("Leaderboard")
+        lb_title.setStyleSheet("font-size: 11px; color: #6b6b72; "
+                               "letter-spacing: 2px; text-transform: uppercase; "
+                               "font-weight: 500; margin-top: 24px;")
         lb_title.setAlignment(Qt.AlignCenter)
         layout.addWidget(lb_title)
 
@@ -559,18 +582,20 @@ class VectorGame(QWidget):
         self.lb_table.setColumnCount(3)
         self.lb_table.setHorizontalHeaderLabels(["Rank", "Player", "Score"])
         self.lb_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.lb_table.setFixedWidth(560)
-        self.lb_table.setFixedHeight(360)
+        self.lb_table.setFixedWidth(520)
+        self.lb_table.setFixedHeight(340)
         self.lb_table.verticalHeader().setVisible(False)
+        self.lb_table.setShowGrid(False)
         layout.addWidget(self.lb_table, alignment=Qt.AlignCenter)
 
-        replay_btn = QPushButton("▶  PLAY AGAIN")
-        replay_btn.setFixedSize(280, 52)
+        replay_btn = QPushButton("Play again")
+        replay_btn.setFixedSize(200, 42)
         replay_btn.setStyleSheet(
-            "QPushButton { background-color: #00d4e0; color: #000000; "
-            "font-size: 16px; font-weight: bold; border-radius: 26px; "
-            "letter-spacing: 2px; }"
-            "QPushButton:hover { background-color: #4be6f0; }"
+            "QPushButton { background-color: #6366f1; color: #ffffff; "
+            "font-size: 14px; font-weight: 500; border-radius: 6px; "
+            "border: none; }"
+            "QPushButton:hover { background-color: #5558e3; }"
+            "QPushButton:pressed { background-color: #4f51d9; }"
         )
         replay_btn.clicked.connect(lambda: self.stacked.setCurrentWidget(self.start_screen))
         layout.addWidget(replay_btn, alignment=Qt.AlignCenter)
@@ -580,29 +605,33 @@ class VectorGame(QWidget):
     # =====================================================
     def show_instructions(self):
         msg = QMessageBox(self)
-        msg.setWindowTitle("How to Play")
+        msg.setWindowTitle("How to play")
         msg.setStyleSheet(
-            "QLabel { color: white; min-width: 480px; font-size: 14px; }"
-            "QMessageBox { background-color: #1a1f24; }"
-            "QPushButton { background-color: #00d4e0; color: black; "
-            "border-radius: 6px; padding: 8px 20px; font-weight: bold; }"
+            "QLabel { color: #d4d4d6; min-width: 460px; font-size: 13px; "
+            "line-height: 1.6; }"
+            "QMessageBox { background-color: #131316; }"
+            "QPushButton { background-color: #6366f1; color: #ffffff; "
+            "border-radius: 6px; padding: 8px 20px; font-weight: 500; "
+            "border: none; }"
+            "QPushButton:hover { background-color: #5558e3; }"
         )
         msg.setText(
-            "<h2 style='color:#00d4e0;'>How to Play</h2>"
-            "<p><b>1. Aim your arrow:</b><br>"
-            "👆 <span style='color:#ffd700;'>Click any blue vacancy dot</span> on the 3D plot to snap your yellow arrow to it. "
-            "Use the sliders for fine adjustments.</p>"
-            "<p><b>2. Guess the energy:</b><br>"
-            "Look at the number of vacancies — more vacancies generally means higher energy. "
+            "<p style='color:#ffffff; font-size:15px; font-weight:600; "
+            "margin-bottom:12px;'>How to play</p>"
+            "<p><span style='color:#6366f1;'>1.</span> "
+            "<b style='color:#ffffff;'>Aim direction.</b> "
+            "Click any vacancy dot on the 3D plot to point your arrow at it, "
+            "or use the elevation/azimuth sliders for fine adjustments.</p>"
+            "<p><span style='color:#6366f1;'>2.</span> "
+            "<b style='color:#ffffff;'>Estimate energy.</b> "
+            "More vacancies generally means higher energy. "
             "Drag the energy slider to your guess.</p>"
-            "<p><b>3. Lock it in:</b><br>"
-            "Click the red <b>LOCK IN GUESS</b> button to see how you did vs the AI.</p>"
-            "<h3 style='color:#ffd700;'>🏆 Scoring</h3>"
-            "<ul>"
-            "<li><b>Direction (1000 pts):</b> -11 points per degree of error</li>"
-            "<li><b>Energy (1000 pts):</b> -20 points per keV of error</li>"
-            "<li><b>Beat the AI bonus:</b> +250 if you beat AI's angle, +250 for energy</li>"
-            "</ul>"
+            "<p><span style='color:#6366f1;'>3.</span> "
+            "<b style='color:#ffffff;'>Submit.</b> "
+            "Reveals your guess, the model's prediction, and the ground truth.</p>"
+            "<p style='color:#8b8b94; margin-top:14px; font-size:12px;'>"
+            "Scoring: direction (1000 pts, -11/°), energy (1000 pts, -20/keV), "
+            "+250 bonus per metric you beat the model on.</p>"
         )
         msg.exec_()
 
@@ -662,13 +691,14 @@ class VectorGame(QWidget):
         row = self.round_tracks[self.current_track_idx]
         n_vac = len(row['raw_points'])
         hint = vacancy_energy_hint(n_vac)
-        self.energy_hint_label.setText(f"💡 {n_vac} vacancies → {hint}")
+        self.energy_hint_label.setText(f"{n_vac} vacancies — {hint.lower()}")
 
-        self.action_btn.setText("LOCK IN GUESS")
+        self.action_btn.setText("Submit")
         self.action_btn.setStyleSheet(
-            "QPushButton { background-color: #ef4444; color: white; "
-            "font-size: 16px; font-weight: bold; }"
-            "QPushButton:hover { background-color: #f87171; }"
+            "QPushButton { background-color: #6366f1; color: #ffffff; "
+            "border: none; font-weight: 500; }"
+            "QPushButton:hover { background-color: #5558e3; }"
+            "QPushButton:pressed { background-color: #4f51d9; }"
         )
         self.feedback_label.setText("Analyze the track and lock in your guess.")
         self.update_hud()
@@ -688,11 +718,11 @@ class VectorGame(QWidget):
             self.azim_slider.setEnabled(False)
             self.energy_slider.setEnabled(False)
             self.reset_btn.setEnabled(False)
-            self.action_btn.setText("NEXT TRACK ▶")
+            self.action_btn.setText("Next track")
             self.action_btn.setStyleSheet(
-                "QPushButton { background-color: #00d4e0; color: #000000; "
-                "font-size: 16px; font-weight: bold; }"
-                "QPushButton:hover { background-color: #4be6f0; }"
+                "QPushButton { background-color: #ffffff; color: #0d0d0f; "
+                "border: none; font-weight: 500; }"
+                "QPushButton:hover { background-color: #e5e5e7; }"
             )
             self.calculate_scores()
             self.draw_answers()
@@ -754,33 +784,34 @@ class VectorGame(QWidget):
 
         # Verdict line
         if round_score > ai_round_score:
-            verdict = "<span style='color:#00ff88; font-size:16px; font-weight:bold;'>✅ YOU WON THIS ROUND!</span>"
+            verdict = "<span style='color:#22c55e; font-weight:600;'>You won this round.</span>"
         elif round_score < ai_round_score:
-            verdict = "<span style='color:#ff5555; font-size:16px; font-weight:bold;'>🤖 AI wins this round</span>"
+            verdict = "<span style='color:#8b8b94; font-weight:600;'>Model won this round.</span>"
         else:
-            verdict = "<span style='color:#ffd700; font-size:16px; font-weight:bold;'>🤝 Tie!</span>"
+            verdict = "<span style='color:#a78bfa; font-weight:600;'>Tie.</span>"
 
+        bonus_text = f"  +{h_bonus} bonus" if h_bonus > 0 else ""
         feedback = (
             f"{verdict}<br><br>"
-            f"<b style='color:#00ff88;'>YOU:</b> "
-            f"angle {h_error:.1f}° | energy {h_e_error:.1f} keV | "
-            f"<b>+{round_score}</b>"
-            f"{' (+' + str(h_bonus) + ' bonus)' if h_bonus > 0 else ''}<br>"
-            f"<b style='color:#ff5555;'>AI:</b> "
-            f"angle {ai_error:.1f}° | energy {ai_e_error:.1f} keV | "
-            f"<b>+{ai_round_score}</b><br><br>"
-            f"<b style='color:#a0a0a0;'>Truth:</b> "
-            f"E = {t_energy:.1f} keV"
+            f"<span style='color:#6b6b72;'>You</span>"
+            f"<span style='color:#ffffff;'>  angle {h_error:.1f}°  ·  "
+            f"energy {h_e_error:.1f} keV  ·  +{round_score}</span>"
+            f"<span style='color:#6b6b72;'>{bonus_text}</span><br>"
+            f"<span style='color:#6b6b72;'>Model</span>"
+            f"<span style='color:#ffffff;'>  angle {ai_error:.1f}°  ·  "
+            f"energy {ai_e_error:.1f} keV  ·  +{ai_round_score}</span><br><br>"
+            f"<span style='color:#6b6b72;'>Truth</span>"
+            f"<span style='color:#ffffff;'>  E = {t_energy:.1f} keV</span>"
         )
         self.feedback_label.setText(feedback)
         self.update_hud()
 
     def update_hud(self):
         self.track_label.setText(
-            f"Track {self.current_track_idx + 1} / {len(self.round_tracks)}"
+            f"Track {self.current_track_idx + 1} of {len(self.round_tracks)}"
         )
-        self.human_score_label.setText(f"YOU\n{self.total_score}")
-        self.ai_score_label.setText(f"AI\n{self.ai_total_score}")
+        self.human_score_label.setText(str(self.total_score))
+        self.ai_score_label.setText(str(self.ai_total_score))
 
     def end_game(self):
         self.leaderboard.append({
@@ -792,14 +823,19 @@ class VectorGame(QWidget):
 
         # Final score message
         if self.total_score > self.ai_total_score:
-            verdict = ("<span style='color:#00ff88;'>🎉  YOU BEAT THE AI!</span><br>"
-                       f"You: <b>{self.total_score}</b>  vs  AI: {self.ai_total_score}")
+            verdict = (f"<span style='color:#ffffff; font-size:32px; "
+                       f"font-weight:600;'>You won.</span><br><br>"
+                       f"<span style='color:#8b8b94;'>"
+                       f"You {self.total_score}  ·  Model {self.ai_total_score}</span>")
         elif self.total_score < self.ai_total_score:
-            verdict = ("<span style='color:#ff5555;'>🤖  AI WINS</span><br>"
-                       f"You: {self.total_score}  vs  AI: <b>{self.ai_total_score}</b>")
+            verdict = (f"<span style='color:#ffffff; font-size:32px; "
+                       f"font-weight:600;'>Model won.</span><br><br>"
+                       f"<span style='color:#8b8b94;'>"
+                       f"You {self.total_score}  ·  Model {self.ai_total_score}</span>")
         else:
-            verdict = ("<span style='color:#ffd700;'>🤝  PERFECT TIE!</span><br>"
-                       f"Both: <b>{self.total_score}</b>")
+            verdict = (f"<span style='color:#ffffff; font-size:32px; "
+                       f"font-weight:600;'>Tie.</span><br><br>"
+                       f"<span style='color:#8b8b94;'>Both {self.total_score}</span>")
         self.final_score_label.setText(verdict)
 
         # Populate leaderboard
@@ -855,25 +891,25 @@ class VectorGame(QWidget):
 
         self.figure.clear()
         self.ax = self.figure.add_subplot(111, projection='3d')
-        self.ax.set_facecolor('#0f1419')
+        self.ax.set_facecolor('#131316')
         self.ax.xaxis.pane.fill = False
         self.ax.yaxis.pane.fill = False
         self.ax.zaxis.pane.fill = False
-        self.ax.xaxis.pane.set_edgecolor('#2d3748')
-        self.ax.yaxis.pane.set_edgecolor('#2d3748')
-        self.ax.zaxis.pane.set_edgecolor('#2d3748')
-        self.ax.tick_params(colors='#6b7280', labelsize=9)
-        self.ax.xaxis.label.set_color('#a0a0a0')
-        self.ax.yaxis.label.set_color('#a0a0a0')
-        self.ax.zaxis.label.set_color('#a0a0a0')
+        self.ax.xaxis.pane.set_edgecolor('#1f1f23')
+        self.ax.yaxis.pane.set_edgecolor('#1f1f23')
+        self.ax.zaxis.pane.set_edgecolor('#1f1f23')
+        self.ax.tick_params(colors='#5a5a60', labelsize=8)
+        self.ax.xaxis.label.set_color('#6b6b72')
+        self.ax.yaxis.label.set_color('#6b6b72')
+        self.ax.zaxis.label.set_color('#6b6b72')
 
         self.ax.scatter(pts[:, 0], pts[:, 1], pts[:, 2],
-                        c='#00d4e0', alpha=0.7, s=40,
-                        edgecolors='white', linewidths=0.4, picker=8)
+                        c='#a5b4fc', alpha=0.65, s=38,
+                        edgecolors='#0d0d0f', linewidths=0.3, picker=8)
 
         self.ax.set_title(
-            f"{len(pts)} Vacancies   |   Click any dot to aim",
-            color='white', pad=18, fontsize=14, fontweight='bold')
+            f"{len(pts)} vacancies",
+            color='#d4d4d6', pad=14, fontsize=13, fontweight='normal')
 
         if len(pts) > 0:
             max_r = np.max([
@@ -918,9 +954,9 @@ class VectorGame(QWidget):
 
         self.guess_quiver = self.ax.quiver(
             0, 0, 0, gx * scale, gy * scale, gz * scale,
-            color='#ffd700', linewidth=6,
+            color='#ffffff', linewidth=4,
             arrow_length_ratio=0.18,
-            label='Your Guess'
+            label='You'
         )
 
         self.canvas.draw_idle()
@@ -933,24 +969,24 @@ class VectorGame(QWidget):
         self.ax.quiver(
             0, 0, 0,
             row['true_vx'] * scale, row['true_vy'] * scale, row['true_vz'] * scale,
-            color='#00ff88', linewidth=4,
+            color='#22c55e', linewidth=3.5,
             arrow_length_ratio=0.18,
             label='Truth'
         )
         self.ax.quiver(
             0, 0, 0,
             row['pred_vx'] * scale, row['pred_vy'] * scale, row['pred_vz'] * scale,
-            color='#ff5555', linewidth=4,
+            color='#a78bfa', linewidth=3.5,
             arrow_length_ratio=0.18,
-            label='AI Guess'
+            label='Model'
         )
 
         self.ax.set_title(
-            f"True Energy: {row['true_energy']:.1f} keV   |   {len(pts)} Vacancies",
-            color='white', pad=18, fontsize=14, fontweight='bold')
+            f"E = {row['true_energy']:.1f} keV  ·  {len(pts)} vacancies",
+            color='#d4d4d6', pad=14, fontsize=13, fontweight='normal')
         legend = self.ax.legend(
-            facecolor='#1a1f24', edgecolor='#2d3748',
-            labelcolor='white', fontsize=12, loc='upper right')
+            facecolor='#131316', edgecolor='#232328',
+            labelcolor='#d4d4d6', fontsize=11, loc='upper right')
         legend.get_frame().set_alpha(0.95)
 
         self.canvas.draw_idle()
