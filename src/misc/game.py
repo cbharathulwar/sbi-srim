@@ -164,8 +164,9 @@ class VectorGame(QWidget):
         self.round_tracks = []
         self.current_track_idx = 0
         self.player_name = ""
-        self.total_score = 0
-        self.ai_total_score = 0
+        self.human_wins = 0
+        self.ai_wins = 0
+        self.human_error_sum = 0.0
         self.locked_in = False
         self.first_track_shown = False
 
@@ -225,7 +226,22 @@ class VectorGame(QWidget):
             self.leaderboard = []
 
     def save_leaderboard(self):
-        self.leaderboard.sort(key=lambda x: x['score'], reverse=True)
+        # Sort by win-rate first, then by lowest avg error as tiebreaker.
+        # Migrate any legacy 'score' entries (best-effort).
+        for entry in self.leaderboard:
+            if 'wins' not in entry:
+                entry['wins'] = 0
+            if 'rounds' not in entry:
+                entry['rounds'] = 1
+            if 'avg_error' not in entry:
+                entry['avg_error'] = 999.0
+
+        self.leaderboard.sort(
+            key=lambda x: (
+                -(x['wins'] / max(x['rounds'], 1)),  # higher win rate first
+                x['avg_error'],                       # then lower error
+            )
+        )
         self.leaderboard = self.leaderboard[:10]
         os.makedirs(os.path.dirname(LEADERBOARD_FILE), exist_ok=True)
         with open(LEADERBOARD_FILE, 'w') as f:
@@ -336,7 +352,7 @@ class VectorGame(QWidget):
 
         you_col = QVBoxLayout()
         you_col.setSpacing(2)
-        you_label = QLabel("You")
+        you_label = QLabel("Your wins")
         you_label.setStyleSheet("font-size: 11px; color: #6b6b72; "
                                 "text-transform: uppercase; letter-spacing: 1px;")
         self.human_score_label = QLabel("0")
@@ -348,7 +364,7 @@ class VectorGame(QWidget):
 
         ai_col = QVBoxLayout()
         ai_col.setSpacing(2)
-        ai_label = QLabel("Model")
+        ai_label = QLabel("Model wins")
         ai_label.setStyleSheet("font-size: 11px; color: #6b6b72; "
                                "text-transform: uppercase; letter-spacing: 1px;")
         self.ai_score_label = QLabel("0")
@@ -519,8 +535,9 @@ class VectorGame(QWidget):
         layout.addWidget(lb_title)
 
         self.lb_table = QTableWidget()
-        self.lb_table.setColumnCount(3)
-        self.lb_table.setHorizontalHeaderLabels(["Rank", "Player", "Score"])
+        self.lb_table.setColumnCount(4)
+        self.lb_table.setHorizontalHeaderLabels(
+            ["Rank", "Player", "Wins", "Avg error"])
         self.lb_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.lb_table.setFixedWidth(520)
         self.lb_table.setFixedHeight(340)
@@ -566,8 +583,8 @@ class VectorGame(QWidget):
             "<b style='color:#ffffff;'>Submit.</b> "
             "Reveals your guess, the model's prediction, and the ground truth.</p>"
             "<p style='color:#8b8b94; margin-top:14px; font-size:12px;'>"
-            "Scoring: 1000 points minus 11 per degree of error, "
-            "+500 bonus if you beat the model.</p>"
+            "You win a round if your angle is closer to the truth than the model's. "
+            "Final score is the number of rounds won.</p>"
         )
         msg.exec_()
 
@@ -577,8 +594,9 @@ class VectorGame(QWidget):
 
         self.round_tracks = self.df_results.sample(n=num_rounds).to_dict('records')
         self.current_track_idx = 0
-        self.total_score = 0
-        self.ai_total_score = 0
+        self.human_wins = 0
+        self.ai_wins = 0
+        self.human_error_sum = 0.0
         self.first_track_shown = False
 
         self.stacked.setCurrentWidget(self.game_screen)
@@ -671,32 +689,23 @@ class VectorGame(QWidget):
         h_error = np.degrees(np.arccos(human_dot))
         ai_error = np.degrees(np.arccos(ai_dot))
 
-        # Direction-only scoring: 1000 base, -11 per deg, +500 bonus for beating model
-        round_score = max(0, int(1000 - (h_error * 11.11)))
-        ai_round_score = max(0, int(1000 - (ai_error * 11.11)))
+        self.human_error_sum += h_error
 
-        h_bonus = 500 if h_error < ai_error else 0
-        round_score += h_bonus
-
-        self.total_score += round_score
-        self.ai_total_score += ai_round_score
-
-        # Verdict line
-        if round_score > ai_round_score:
+        if h_error < ai_error:
+            self.human_wins += 1
             verdict = "<span style='color:#22c55e; font-weight:600;'>You won this round.</span>"
-        elif round_score < ai_round_score:
+        elif ai_error < h_error:
+            self.ai_wins += 1
             verdict = "<span style='color:#8b8b94; font-weight:600;'>Model won this round.</span>"
         else:
             verdict = "<span style='color:#a78bfa; font-weight:600;'>Tie.</span>"
 
-        bonus_text = f"  +{h_bonus} bonus" if h_bonus > 0 else ""
         feedback = (
             f"{verdict}<br><br>"
             f"<span style='color:#6b6b72;'>You</span>"
-            f"<span style='color:#ffffff;'>  {h_error:.1f}°  ·  +{round_score}</span>"
-            f"<span style='color:#6b6b72;'>{bonus_text}</span><br>"
+            f"<span style='color:#ffffff;'>  {h_error:.1f}°</span><br>"
             f"<span style='color:#6b6b72;'>Model</span>"
-            f"<span style='color:#ffffff;'>  {ai_error:.1f}°  ·  +{ai_round_score}</span>"
+            f"<span style='color:#ffffff;'>  {ai_error:.1f}°</span>"
         )
         self.feedback_label.setText(feedback)
         self.update_hud()
@@ -705,32 +714,35 @@ class VectorGame(QWidget):
         self.track_label.setText(
             f"Track {self.current_track_idx + 1} of {len(self.round_tracks)}"
         )
-        self.human_score_label.setText(str(self.total_score))
-        self.ai_score_label.setText(str(self.ai_total_score))
+        self.human_score_label.setText(str(self.human_wins))
+        self.ai_score_label.setText(str(self.ai_wins))
 
     def end_game(self):
+        n_rounds = len(self.round_tracks)
+        avg_err = self.human_error_sum / max(n_rounds, 1)
+
         self.leaderboard.append({
             "name": self.player_name,
-            "score": self.total_score,
-            "rounds": len(self.round_tracks),
+            "wins": self.human_wins,
+            "rounds": n_rounds,
+            "avg_error": round(avg_err, 2),
         })
         self.save_leaderboard()
 
-        # Final score message
-        if self.total_score > self.ai_total_score:
-            verdict = (f"<span style='color:#ffffff; font-size:32px; "
-                       f"font-weight:600;'>You won.</span><br><br>"
-                       f"<span style='color:#8b8b94;'>"
-                       f"You {self.total_score}  ·  Model {self.ai_total_score}</span>")
-        elif self.total_score < self.ai_total_score:
-            verdict = (f"<span style='color:#ffffff; font-size:32px; "
-                       f"font-weight:600;'>Model won.</span><br><br>"
-                       f"<span style='color:#8b8b94;'>"
-                       f"You {self.total_score}  ·  Model {self.ai_total_score}</span>")
+        if self.human_wins > self.ai_wins:
+            headline = "You beat the model."
+        elif self.human_wins < self.ai_wins:
+            headline = "Model wins."
         else:
-            verdict = (f"<span style='color:#ffffff; font-size:32px; "
-                       f"font-weight:600;'>Tie.</span><br><br>"
-                       f"<span style='color:#8b8b94;'>Both {self.total_score}</span>")
+            headline = "Tie."
+
+        verdict = (
+            f"<span style='color:#ffffff; font-size:32px; "
+            f"font-weight:600;'>{headline}</span><br><br>"
+            f"<span style='color:#8b8b94;'>"
+            f"You won {self.human_wins} of {n_rounds}  ·  "
+            f"Avg error {avg_err:.1f}°</span>"
+        )
         self.final_score_label.setText(verdict)
 
         # Populate leaderboard
@@ -740,11 +752,15 @@ class VectorGame(QWidget):
             rank_item.setTextAlignment(Qt.AlignCenter)
             name_item = QTableWidgetItem(entry['name'])
             name_item.setTextAlignment(Qt.AlignCenter)
-            score_item = QTableWidgetItem(str(entry['score']))
-            score_item.setTextAlignment(Qt.AlignCenter)
+            wins_item = QTableWidgetItem(
+                f"{entry['wins']} / {entry['rounds']}")
+            wins_item.setTextAlignment(Qt.AlignCenter)
+            err_item = QTableWidgetItem(f"{entry['avg_error']:.1f}°")
+            err_item.setTextAlignment(Qt.AlignCenter)
             self.lb_table.setItem(i, 0, rank_item)
             self.lb_table.setItem(i, 1, name_item)
-            self.lb_table.setItem(i, 2, score_item)
+            self.lb_table.setItem(i, 2, wins_item)
+            self.lb_table.setItem(i, 3, err_item)
 
         self.stacked.setCurrentWidget(self.lb_screen)
 
