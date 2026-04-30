@@ -26,12 +26,10 @@ RESULTS_CSV = "results/gvp_egnn_v2/eval_results.csv"
 RAW_DATA_CSV = "data/mcpe3d/mcpe_3d_eval.csv"
 LEADERBOARD_FILE = "results/gvp_egnn_v2/leaderboard.json"
 
-# Filter: only show tracks above this energy so the game is a fair/showcase fight.
+# Filter: only show tracks in this energy range so the game is a fair fight.
+# (1 keV tracks are bimodal/ambiguous and frustrating; >100 keV is rare.)
 MIN_ENERGY_KEV = 5.0
 MAX_ENERGY_KEV = 100.0
-
-# Energy slider uses a log scale 0-1000 mapping to MIN_ENERGY_KEV..MAX_ENERGY_KEV
-ENERGY_SLIDER_RES = 1000
 
 # ===============================
 # Theme
@@ -147,32 +145,6 @@ QLabel { color: #d4d4d6; }
 """
 
 
-def slider_to_energy(s):
-    """Map slider value [0, ENERGY_SLIDER_RES] to keV [MIN, MAX] on log scale."""
-    frac = s / ENERGY_SLIDER_RES
-    log_min = np.log(MIN_ENERGY_KEV)
-    log_max = np.log(MAX_ENERGY_KEV)
-    return float(np.exp(log_min + frac * (log_max - log_min)))
-
-
-def energy_to_slider(e):
-    """Inverse of slider_to_energy."""
-    e = max(MIN_ENERGY_KEV, min(MAX_ENERGY_KEV, e))
-    log_min = np.log(MIN_ENERGY_KEV)
-    log_max = np.log(MAX_ENERGY_KEV)
-    return int(ENERGY_SLIDER_RES * (np.log(e) - log_min) / (log_max - log_min))
-
-
-def vacancy_energy_hint(n_vac):
-    """Rough energy hint based on vacancy count (calibrated from training data)."""
-    if n_vac < 25:
-        return "Low energy (likely 5-15 keV)"
-    elif n_vac < 60:
-        return "Medium energy (likely 10-40 keV)"
-    elif n_vac < 120:
-        return "High energy (likely 30-70 keV)"
-    else:
-        return "Very high energy (likely 50-100 keV)"
 
 
 # ===============================
@@ -283,7 +255,7 @@ class VectorGame(QWidget):
 
         desc = QLabel(
             "Inspect a 3D point cloud of vacancies left by a nuclear recoil. "
-            "Estimate the incoming direction and its kinetic energy. "
+            "Estimate the direction the particle came from. "
             "Compare your guess against a trained graph neural network."
         )
         desc.setStyleSheet("font-size: 14px; color: #8b8b94; line-height: 1.6;")
@@ -449,38 +421,6 @@ class VectorGame(QWidget):
         dir_group.setLayout(dir_layout)
         left_layout.addWidget(dir_group)
 
-        # Energy controls
-        eng_group = QGroupBox("Energy")
-        eng_layout = QVBoxLayout()
-        eng_layout.setSpacing(12)
-        eng_layout.setContentsMargins(0, 8, 0, 4)
-
-        eng_row = QHBoxLayout()
-        eng_label_text = QLabel("Estimate")
-        eng_label_text.setStyleSheet("font-size: 13px; color: #8b8b94;")
-        self.energy_value_label = QLabel("10.0 keV")
-        self.energy_value_label.setStyleSheet("font-size: 13px; color: #ffffff; "
-                                              "font-weight: 500;")
-        self.energy_value_label.setAlignment(Qt.AlignRight)
-        eng_row.addWidget(eng_label_text)
-        eng_row.addWidget(self.energy_value_label)
-        eng_layout.addLayout(eng_row)
-
-        self.energy_slider = QSlider(Qt.Horizontal)
-        self.energy_slider.setRange(0, ENERGY_SLIDER_RES)
-        self.energy_slider.setValue(energy_to_slider(10.0))
-        self.energy_slider.valueChanged.connect(self.on_energy_slider)
-        eng_layout.addWidget(self.energy_slider)
-
-        self.energy_hint_label = QLabel("Higher vacancy counts indicate higher energy")
-        self.energy_hint_label.setStyleSheet(
-            "font-size: 12px; color: #5a5a60; font-style: italic; padding-top: 4px;")
-        self.energy_hint_label.setWordWrap(True)
-        eng_layout.addWidget(self.energy_hint_label)
-
-        eng_group.setLayout(eng_layout)
-        left_layout.addWidget(eng_group)
-
         # Action buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
@@ -619,19 +559,15 @@ class VectorGame(QWidget):
             "<p style='color:#ffffff; font-size:15px; font-weight:600; "
             "margin-bottom:12px;'>How to play</p>"
             "<p><span style='color:#6366f1;'>1.</span> "
-            "<b style='color:#ffffff;'>Aim direction.</b> "
+            "<b style='color:#ffffff;'>Aim your arrow.</b> "
             "Click any vacancy dot on the 3D plot to point your arrow at it, "
             "or use the elevation/azimuth sliders for fine adjustments.</p>"
             "<p><span style='color:#6366f1;'>2.</span> "
-            "<b style='color:#ffffff;'>Estimate energy.</b> "
-            "More vacancies generally means higher energy. "
-            "Drag the energy slider to your guess.</p>"
-            "<p><span style='color:#6366f1;'>3.</span> "
             "<b style='color:#ffffff;'>Submit.</b> "
             "Reveals your guess, the model's prediction, and the ground truth.</p>"
             "<p style='color:#8b8b94; margin-top:14px; font-size:12px;'>"
-            "Scoring: direction (1000 pts, -11/°), energy (1000 pts, -20/keV), "
-            "+250 bonus per metric you beat the model on.</p>"
+            "Scoring: 1000 points minus 11 per degree of error, "
+            "+500 bonus if you beat the model.</p>"
         )
         msg.exec_()
 
@@ -670,28 +606,17 @@ class VectorGame(QWidget):
         self.locked_in = False
         self.elev_slider.setEnabled(True)
         self.azim_slider.setEnabled(True)
-        self.energy_slider.setEnabled(True)
         self.reset_btn.setEnabled(True)
 
         self.elev_slider.blockSignals(True)
         self.azim_slider.blockSignals(True)
-        self.energy_slider.blockSignals(True)
         self.elev_slider.setValue(0)
         self.azim_slider.setValue(0)
-        self.energy_slider.setValue(energy_to_slider(10.0))
         self.elev_slider.blockSignals(False)
         self.azim_slider.blockSignals(False)
-        self.energy_slider.blockSignals(False)
 
         self.elev_value_label.setText("0°")
         self.azim_value_label.setText("0°")
-        self.energy_value_label.setText("10.0 keV")
-
-        # Update vacancy hint
-        row = self.round_tracks[self.current_track_idx]
-        n_vac = len(row['raw_points'])
-        hint = vacancy_energy_hint(n_vac)
-        self.energy_hint_label.setText(f"{n_vac} vacancies — {hint.lower()}")
 
         self.action_btn.setText("Submit")
         self.action_btn.setStyleSheet(
@@ -700,23 +625,15 @@ class VectorGame(QWidget):
             "QPushButton:hover { background-color: #5558e3; }"
             "QPushButton:pressed { background-color: #4f51d9; }"
         )
-        self.feedback_label.setText("Analyze the track and lock in your guess.")
+        self.feedback_label.setText("Aim your direction and submit when ready.")
         self.update_hud()
         self.init_plot()
-
-    def on_energy_slider(self, val):
-        e = slider_to_energy(val)
-        self.energy_value_label.setText(f"{e:.1f} keV")
-
-    def get_energy(self):
-        return slider_to_energy(self.energy_slider.value())
 
     def handle_action(self):
         if not self.locked_in:
             self.locked_in = True
             self.elev_slider.setEnabled(False)
             self.azim_slider.setEnabled(False)
-            self.energy_slider.setEnabled(False)
             self.reset_btn.setEnabled(False)
             self.action_btn.setText("Next track")
             self.action_btn.setStyleSheet(
@@ -747,9 +664,6 @@ class VectorGame(QWidget):
         ai_v = np.array([row['pred_vx'], row['pred_vy'], row['pred_vz']])
 
         true_norm = np.linalg.norm(true_v) + 1e-9
-        norm_true = true_v / true_norm
-        t_elev = np.degrees(np.arcsin(norm_true[2]))
-        t_azim = np.degrees(np.arctan2(norm_true[1], norm_true[0]))
 
         human_dot = np.clip(np.dot(human_v, true_v) / true_norm, -1.0, 1.0)
         ai_dot = np.clip(np.dot(ai_v, true_v) / true_norm, -1.0, 1.0)
@@ -757,26 +671,11 @@ class VectorGame(QWidget):
         h_error = np.degrees(np.arccos(human_dot))
         ai_error = np.degrees(np.arccos(ai_dot))
 
-        t_energy = row['true_energy']
-        h_energy = self.get_energy()
-        ai_energy = row['pred_energy']
+        # Direction-only scoring: 1000 base, -11 per deg, +500 bonus for beating model
+        round_score = max(0, int(1000 - (h_error * 11.11)))
+        ai_round_score = max(0, int(1000 - (ai_error * 11.11)))
 
-        h_e_error = abs(h_energy - t_energy)
-        ai_e_error = abs(ai_energy - t_energy)
-
-        dir_score = max(0, int(1000 - (h_error * 11.11)))
-        ai_dir_score = max(0, int(1000 - (ai_error * 11.11)))
-        eng_score = max(0, int(1000 - (h_e_error * 20)))
-        ai_eng_score = max(0, int(1000 - (ai_e_error * 20)))
-
-        round_score = dir_score + eng_score
-        ai_round_score = ai_dir_score + ai_eng_score
-
-        h_bonus = 0
-        if h_error < ai_error:
-            h_bonus += 250
-        if h_e_error < ai_e_error:
-            h_bonus += 250
+        h_bonus = 500 if h_error < ai_error else 0
         round_score += h_bonus
 
         self.total_score += round_score
@@ -794,14 +693,10 @@ class VectorGame(QWidget):
         feedback = (
             f"{verdict}<br><br>"
             f"<span style='color:#6b6b72;'>You</span>"
-            f"<span style='color:#ffffff;'>  angle {h_error:.1f}°  ·  "
-            f"energy {h_e_error:.1f} keV  ·  +{round_score}</span>"
+            f"<span style='color:#ffffff;'>  {h_error:.1f}°  ·  +{round_score}</span>"
             f"<span style='color:#6b6b72;'>{bonus_text}</span><br>"
             f"<span style='color:#6b6b72;'>Model</span>"
-            f"<span style='color:#ffffff;'>  angle {ai_error:.1f}°  ·  "
-            f"energy {ai_e_error:.1f} keV  ·  +{ai_round_score}</span><br><br>"
-            f"<span style='color:#6b6b72;'>Truth</span>"
-            f"<span style='color:#ffffff;'>  E = {t_energy:.1f} keV</span>"
+            f"<span style='color:#ffffff;'>  {ai_error:.1f}°  ·  +{ai_round_score}</span>"
         )
         self.feedback_label.setText(feedback)
         self.update_hud()
