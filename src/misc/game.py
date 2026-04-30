@@ -316,14 +316,6 @@ class VectorGame(QWidget):
         start_btn.clicked.connect(self.start_game)
         layout.addWidget(start_btn, alignment=Qt.AlignCenter)
 
-        # Footnote
-        footnote = QLabel(
-            "Powered by GVP-EGNN  |  Ang. resolution: ~7°  |  Energy MAE: 5 keV"
-        )
-        footnote.setStyleSheet("font-size: 12px; color: #4a5568; margin-top: 20px;")
-        footnote.setAlignment(Qt.AlignCenter)
-        layout.addWidget(footnote)
-
     # =====================================================
     # SCREEN 2: GAMEPLAY
     # =====================================================
@@ -531,17 +523,6 @@ class VectorGame(QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.canvas.mpl_connect('pick_event', self.on_pick)
         plot_layout.addWidget(self.canvas)
-
-        # Plot caption
-        self.plot_caption = QLabel(
-            "🖱  Drag plot to rotate camera   |   "
-            "👆  Click a vacancy dot to aim arrow at it"
-        )
-        self.plot_caption.setStyleSheet(
-            "font-size: 13px; color: #a0a0a0; padding: 6px;"
-        )
-        self.plot_caption.setAlignment(Qt.AlignCenter)
-        plot_layout.addWidget(self.plot_caption)
 
         outer.addWidget(plot_container, stretch=1)
 
