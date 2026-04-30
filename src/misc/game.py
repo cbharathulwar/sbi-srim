@@ -218,6 +218,29 @@ class VectorGame(QWidget):
         print(f"[INFO] Loaded {before} tracks, kept {len(self.df_results)} in "
               f"[{MIN_ENERGY_KEV}, {MAX_ENERGY_KEV}] keV")
 
+        # Pick the fixed game set: one track per energy bin, same for every player.
+        # Deterministic — picks the track closest to each target energy with the
+        # smallest ion_number-equivalent index for tie-breaks.
+        self.fixed_game_tracks = self._pick_fixed_tracks()
+        print(f"[INFO] Fixed game set: {len(self.fixed_game_tracks)} tracks at "
+              f"{[round(r['true_energy'], 1) for r in self.fixed_game_tracks]} keV")
+
+    def _pick_fixed_tracks(self):
+        """Pick one track per energy bin for the fixed-set game. Deterministic."""
+        target_energies = [7.0, 15.0, 30.0, 55.0, 85.0]   # spans 5-100 keV
+        picks = []
+        used_idx = set()
+        energies = self.df_results['true_energy'].values
+        for target in target_energies:
+            # Closest energy not already picked
+            order = np.argsort(np.abs(energies - target))
+            for idx in order:
+                if idx not in used_idx:
+                    used_idx.add(idx)
+                    picks.append(self.df_results.iloc[idx].to_dict())
+                    break
+        return picks
+
     def load_leaderboard(self):
         if os.path.exists(LEADERBOARD_FILE):
             with open(LEADERBOARD_FILE, 'r') as f:
@@ -292,18 +315,10 @@ class VectorGame(QWidget):
         self.name_input.setPlaceholderText("Your name")
         self.name_input.setFixedHeight(38)
 
-        self.rounds_input = QSpinBox()
-        self.rounds_input.setRange(1, 20)
-        self.rounds_input.setValue(5)
-        self.rounds_input.setFixedHeight(38)
-
         name_lbl = QLabel("Name")
         name_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
-        rounds_lbl = QLabel("Tracks")
-        rounds_lbl.setStyleSheet("font-size: 13px; color: #8b8b94;")
 
         form.addRow(name_lbl, self.name_input)
-        form.addRow(rounds_lbl, self.rounds_input)
 
         layout.addWidget(form_widget, alignment=Qt.AlignCenter)
 
@@ -590,9 +605,9 @@ class VectorGame(QWidget):
 
     def start_game(self):
         self.player_name = self.name_input.text().strip() or "Guest"
-        num_rounds = self.rounds_input.value()
 
-        self.round_tracks = self.df_results.sample(n=num_rounds).to_dict('records')
+        # Same fixed 5 tracks for every player so the leaderboard is fair.
+        self.round_tracks = list(self.fixed_game_tracks)
         self.current_track_idx = 0
         self.human_wins = 0
         self.ai_wins = 0
