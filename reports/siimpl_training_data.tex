@@ -1,0 +1,374 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{xcolor}
+
+\title{SIIMPL Training Data for the GVP--EGNN Reconstruction Model\\
+\large Channeling-aware sampling, lattice symmetry, and generation parameters}
+\author{Walsworth Group --- ML-Driven Damage Track Reconstruction}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Motivation}
+
+The v2 GVP--EGNN reconstruction model was trained on \num{197000} SRIM-generated
+carbon recoil tracks in diamond. SRIM treats the target as an amorphous medium
+with isotropic scattering, which permits the use of full $\mathrm{SO}(3)$
+augmentation during training but omits the crystalline structure of diamond and
+in particular \emph{channeling}: the deflection-suppressed transport of recoils
+that travel within a small cone of low-index lattice axes. To extend the v2
+result to a physically realistic crystalline target, the training and evaluation
+data must come from SIIMPL, which propagates recoils against the actual diamond
+lattice and reproduces channeling. This document specifies (i) the channeling
+physics that informs sampling, (ii) the training/evaluation dataset structure,
+and (iii) the SIIMPL generation parameters.
+
+\section{Channeling physics relevant to sampling}
+
+\subsection{Critical angle (Lindhard / Gemmell)}
+
+The continuum-string approximation~\cite{Lindhard1965} gives the
+\emph{Lindhard critical angle} for axial channeling in the high-energy
+regime~\cite[Eq.~(2.12)]{Gemmell1974}:
+\begin{equation}
+  \psi_c \;=\; \sqrt{\frac{2 Z_1 Z_2 e^2}{E\,d}},
+  \label{eq:psi_c}
+\end{equation}
+where $Z_1, Z_2$ are the projectile and target atomic numbers, $E$ is the
+projectile kinetic energy, $d$ is the atomic spacing along the channel row, and
+$e^2 = 14.4~\mathrm{eV\cdot\text{\AA}}$ is the squared electronic
+charge~\cite[Glossary]{Gemmell1974}. For carbon-on-carbon recoils
+($Z_1 = Z_2 = 6$),
+\begin{equation}
+  2 Z_1 Z_2 e^2 \;=\; 2 \cdot 6 \cdot 6 \cdot 14.4 \;=\; 1036.8~\mathrm{eV\cdot\text{\AA}}.
+\end{equation}
+
+The validity boundary between the high-energy form~\eqref{eq:psi_c} and the
+low-energy $\psi_2$ form~\cite[Eq.~(2.28)]{Gemmell1974} is set
+by~\cite[Eq.~(2.29)]{Gemmell1974}
+\begin{equation}
+  E' \;=\; \frac{2 Z_1 Z_2 e^2}{a^2}.
+\end{equation}
+For diamond ($a = \SI{3.567}{\angstrom}$), $E' \approx \SI{82}{eV}$, comfortably
+below our minimum recoil energy of \SI{1}{keV}. The high-energy form is
+therefore valid across the entire $[1,105]~\mathrm{keV}$ window and no
+low-energy correction is required.
+
+\subsection{Channeling directions in diamond}
+
+Diamond has cubic symmetry (space group $Fd\bar{3}m$) with lattice constant
+$a = \SI{3.567}{\angstrom}$~\cite{Kittel}. The three families of low-index
+axial channels are determined entirely by cube symmetry and are listed in
+Table~\ref{tab:axes}. The atomic spacings $d$ along each row are derived
+geometrically from $a$ and the two-atom basis of the diamond structure
+(atoms at $(0,0,0)$ and $(a/4, a/4, a/4)$).
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    Axis family & Direction & $d$ formula & $d$ (\AA) \\
+    \midrule
+    $\langle 110\rangle$ & face diagonal & $a/\sqrt{2}$        & 2.52 \\
+    $\langle 111\rangle$ & body diagonal & $\sqrt{3}\,a/2$ (mean of dimer spacings) & 3.09 \\
+    $\langle 100\rangle$ & cube edge    & $a$                  & 3.57 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Low-index channeling directions in diamond. The $\langle 111\rangle$
+    row has alternating short ($\sqrt{3}\,a/4 \approx 1.54$~\AA) and long
+    ($3\sqrt{3}\,a/4 \approx 4.63$~\AA) spacings owing to the two-atom basis;
+    the appropriate $d$ for the continuum-string critical-angle expression is
+    the mean spacing $\sqrt{3}\,a/2$, as used in the experimental
+    treatment of Derry et~al.~\cite{Derry1982} (see appendix therein for the
+    planar analogue).}
+  \label{tab:axes}
+\end{table}
+
+The number of distinct equivalent directions per family (unsigned): three
+$\langle 100\rangle$, six $\langle 110\rangle$, four $\langle 111\rangle$.
+
+\subsection{Critical angle values}
+
+Evaluating Eq.~\eqref{eq:psi_c} with the $d$ values of Table~\ref{tab:axes}
+gives the critical angles in Table~\ref{tab:psi}.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lccc}
+    \toprule
+    & $\psi_c$ at \SI{1}{keV} & $\psi_c$ at \SI{10}{keV} & $\psi_c$ at \SI{100}{keV} \\
+    \midrule
+    $\langle 110\rangle$ ($d=2.52$~\AA) & $36.6^\circ$ & $11.6^\circ$ & $3.7^\circ$ \\
+    $\langle 111\rangle$ ($d=3.09$~\AA) & $33.1^\circ$ & $10.5^\circ$ & $3.3^\circ$ \\
+    $\langle 100\rangle$ ($d=3.57$~\AA) & $30.8^\circ$ & $9.8^\circ$  & $3.1^\circ$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Critical channeling angles $\psi_c$ for C-on-C recoils in diamond,
+    computed from Eq.~\eqref{eq:psi_c} with the row spacings of
+    Table~\ref{tab:axes}.}
+  \label{tab:psi}
+\end{table}
+
+The strict theoretical ordering $\langle 110\rangle > \langle 111\rangle >
+\langle 100\rangle$ agrees with the experimental measurements of Derry
+et~al.~\cite{Derry1982} on natural diamond. At \SI{1}{MeV} protons and room
+temperature, Derry et~al.\ report measured half-widths $\psi_{1/2} = 0.55^\circ$,
+$0.49^\circ$, $0.42^\circ$ for $\langle 110\rangle$, $\langle 111\rangle$,
+$\langle 100\rangle$ respectively (their Table~II and Fig.~7).
+
+The raw Lindhard $\psi_c$ values of Table~\ref{tab:psi} systematically
+overpredict the experimentally measured half-widths. Derry
+et~al.~\cite{Derry1982}, following Barrett, find good agreement between
+experiment and the corrected angle
+\begin{equation}
+  \psi_{1/2} \;=\; k\,\psi_c, \qquad k \approx 0.83~\text{(axes)},
+\end{equation}
+where $k$ absorbs the effect of thermal vibrations and the Thomas--Fermi
+screening distance. For Pool~B sampling within $2\psi_c$ cones (Sec.~3.1),
+the factor of two amply absorbs the $\sim 17\%$ Barrett correction, so the
+correction is presentational rather than affecting the sampler.
+
+\section{Training dataset}
+
+\subsection{Energy binning}
+
+Both pools draw recoil energies from
+$\mathrm{LogUniform}[\SI{1}{keV}, \SI{105}{keV}]$, matching the v2 prior.
+For stratified analysis and for sizing Pool~B (Sec.~3.3) we partition the energy
+range into three equal log-bins, listed in Table~\ref{tab:ebins}.
+
+\begin{table}[h]
+  \centering
+  \begin{tabular}{lcccc}
+    \toprule
+    Bin   & Range (keV)        & Midpoint (log) & Pool A share \\
+    \midrule
+    Low   & $[1.00,\,4.66)$    & 2.15           & $\approx 33\%$ \\
+    Mid   & $[4.66,\,21.7)$    & 10.0           & $\approx 33\%$ \\
+    High  & $[21.7,\,105]$     & 46.4           & $\approx 33\%$ \\
+    \bottomrule
+  \end{tabular}
+  \caption{Three equal log-spaced energy bins on $[1, 105]~\mathrm{keV}$. The
+    bin edges are placed at $10^{0},\,10^{0.674},\,10^{1.348},\,10^{2.02}$ so
+    that under $\mathrm{LogUniform}$ sampling each bin receives an equal share
+    of tracks.}
+  \label{tab:ebins}
+\end{table}
+
+Combined with the three axis families of Table~\ref{tab:axes}, the analysis
+grid has $3 \times 3 = 9$ (axis $\times$ energy) bins.
+
+\subsection{Pool A --- uniform on $S^2$}
+
+Pool~A is generated first, with \num{200000} training tracks and \num{40000}
+evaluation tracks. Per-track sampling:
+\begin{enumerate}
+  \item Draw $E \sim \mathrm{LogUniform}[\SI{1}{keV}, \SI{105}{keV}]$.
+  \item Draw $g_1, g_2, g_3 \sim \mathcal{N}(0,1)$ independently and set
+        $\hat{\mathbf{v}} = (g_1, g_2, g_3)/\|\mathbf{g}\|$. The resulting unit
+        vector is uniformly distributed on the unit sphere.
+\end{enumerate}
+
+\subsection{Pool B --- deficit-driven channeling fill}
+
+Pool~A's natural channeling coverage is sufficient at low and mid energies but
+thin in the high-$E$ bin (where $\psi_c$ is small). Rather than picking a-priori
+axis weights, we size Pool~B \emph{after} Pool~A is generated, filling each of
+the nine (axis $\times$ energy) bins up to a target count.
+
+\paragraph{Procedure.}
+\begin{enumerate}
+  \item Generate Pool~A.
+  \item For each (axis family $\langle hkl\rangle$, energy bin $b$), count the
+        Pool~A tracks whose direction lies within $\psi_c(E,d_{\langle hkl\rangle})$
+        of any equivalent direction in the family. Call this $N_A^{\langle hkl\rangle, b}$.
+  \item Set per-bin Pool~B target
+        $N_B^{\langle hkl\rangle, b} \;=\; \max\!\left(0,\; N_{\text{target}}
+        - N_A^{\langle hkl\rangle, b}\right)$ with
+        $N_{\text{target}} = \num{3000}$.
+  \item Generate Pool~B tracks per bin: draw $E$ uniformly within the bin,
+        pick one of the family's equivalent directions uniformly, and sample
+        $\hat{\mathbf{v}}$ inside a cone of half-angle $2\psi_c$ about that
+        direction. The $2\psi_c$ cone exceeds the strict channeling boundary so
+        the network is exposed to the transition zone in addition to deeply
+        channeled trajectories.
+\end{enumerate}
+
+\paragraph{Target rationale.} $N_{\text{target}} = \num{3000}$ channeled tracks
+per bin gives a $\sim 10\times$ safety margin over the statistical-precision
+floor required for $\pm 0.3^\circ$ uncertainty on a per-bin median angular
+error, and is comfortably above the morphology-learning threshold for the
+conditional flow ($\sim \num{1000}$). The resulting Pool~B size is expected to
+be $\sim \num{50000}$ tracks (mostly in the high-$E$ bin and the
+under-represented $\langle 100\rangle$ family); the exact size is determined by
+the measurement.
+
+\subsection{Total dataset}
+
+\begin{center}
+  \begin{tabular}{lcc}
+    \toprule
+    & Train (target) & Eval (target) \\
+    \midrule
+    Pool A (uniform-$S^2$)             & \num{200000} & \num{40000} \\
+    Pool B (deficit-filled)            & $\sim$\num{50000} & \num{10000} \\
+    \midrule
+    \textbf{Total}                     & $\sim$\textbf{\num{250000}} & \textbf{\num{50000}} \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+The $\sim$\num{250000} training-track scale is chosen as $\approx 25\%$ above
+the v2 SRIM corpus (\num{197000} tracks) to absorb the additional physical
+complexity introduced by channeling, while remaining well within the local
+SIIMPL generation budget.
+
+\paragraph{Learning-curve validation.} After training, we retrain the model on
+\num{50000}, \num{100000}, \num{200000}, and \num{250000} subsets and plot eval
+median axis-error against training-set size on a log-$x$ axis. A flattening of
+the curve by \num{250000} confirms the chosen scale is not data-limited; if the
+curve is still decreasing, an additional \num{50000} tracks are generated and
+the procedure is rerun. This cost is $\sim 5$ additional A100-hours and
+converts the dataset-size choice from an inherited default into an empirical
+claim.
+
+\section{Crystal-orientation handling}
+
+\subsection{Generation-time: fixed crystal frame}
+
+SIIMPL is run with \texttt{rotate\_crystal\_mode=False}; the lab frame coincides
+with the crystal frame for every event. Per-event crystal-orientation
+randomization is \emph{not} used because it would average over the channeling
+signal we generate the data to capture.
+
+\subsection{Training-time: $\mathrm{O}_h$ augmentation}
+
+The v2 training script applies random $\mathrm{SO}(3)$ rotations to each input
+cloud and its label direction. This is appropriate for an amorphous SRIM
+target (isotropic) but incorrect for SIIMPL: a generic $\mathrm{SO}(3)$
+rotation maps a channeling direction such as $\langle 110\rangle$ to a generic
+direction that the diamond lattice does not have, destroying the channeling
+signal.
+
+The correct symmetry group is the octahedral group $\mathrm{O}_h$, the 48
+rotations and improper rotations that map the diamond lattice to itself:
+24 proper rotations of the cube plus 24 obtained by composition with
+inversion. We precompute the 48 matrices once as a tensor of shape
+$(48,3,3)$. At each training step, an index is sampled uniformly from
+$\{1,\dots,48\}$ and the corresponding matrix is applied to both the
+point-cloud coordinates and the label direction. The model thus learns
+$\mathrm{O}_h$ invariance while remaining sensitive to channeling.
+
+\subsection{Inference-time: $\mathrm{O}_h$ averaging}
+
+For headline-metric reporting we apply $\mathrm{O}_h$ averaging: the input
+cloud is rotated through all 48 group elements, the model is evaluated on each
+rotation, and posteriors are averaged. The result is exactly $\mathrm{O}_h$-
+invariant with reduced variance. Single-shot inference is reported separately
+for the throughput number.
+
+\section{Two-stage training protocol}
+
+The v2 two-stage protocol is retained with one modification (the Stage-2 pool
+restriction below):
+\begin{description}
+  \item[Stage 1 (joint, 180 epochs).] The full \num{200000}-track training set
+    (Pool A $\cup$ Pool B) is used to train the GVP--EGNN backbone, the direction
+    and energy heads, and the conditional normalizing flow simultaneously.
+    The backbone sees both uniform and channeled morphologies.
+  \item[Stage 2 (flow-only, 60 epochs).] The backbone and heads are frozen;
+    only the conditional flow is fine-tuned, and only on Pool A
+    (\num{160000} uniform-on-$S^2$ tracks). The flow's implicit prior is thus
+    uniform-on-$S^2$, and posterior credible regions are calibrated against
+    the prior under which results are reported.
+\end{description}
+
+\section{SIIMPL generation parameters}
+
+\begin{center}
+  \begin{tabular}{ll}
+    \toprule
+    Parameter & Value \\
+    \midrule
+    Target material               & Single-crystal diamond \\
+    Lattice constant $a$          & \SI{3.567}{\angstrom} \\
+    Displacement energy $E_d$     & \SI{43}{eV} (locked) \\
+    Projectile species            & C ($Z=6$, $A=12$) \\
+    Energy distribution           & $\mathrm{LogUniform}[\SI{1}{keV}, \SI{105}{keV}]$ \\
+    Direction sampling            & Pool-dependent (\S 3.1) \\
+    Crystal-frame rotation        & Disabled \\
+    Entry geometry                & Default random implant point \\
+    Tracking mode                 & Full cascade, all vacancies \\
+    Output format                 & SIIMPL native CSV $\to$ v2 schema via $\sim 20$-line parser \\
+    Train/eval RNG seed split     & Disjoint master seeds \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+The output schema after the parser matches v2:
+\begin{center}
+  \texttt{x, y, z, ion\_number, energy\_keV, theta\_deg,}\\
+  \texttt{target\_vx, target\_vy, target\_vz}
+\end{center}
+with per-vacancy rows and per-ion labels broadcast across them.
+
+\section{Summary}
+
+\begin{itemize}
+  \item Channeling directions in diamond ($\langle 100\rangle$,
+        $\langle 110\rangle$, $\langle 111\rangle$) are forced by cubic
+        symmetry~\cite{Kittel}; their associated row spacings $d$ follow from
+        the lattice constant and the two-atom basis.
+  \item The critical angle $\psi_c$ follows Eq.~\eqref{eq:psi_c}, valid across
+        $1$--$\SI{105}{keV}$ in diamond (validity boundary
+        $E' \approx \SI{82}{eV}$). The ordering
+        $\psi_c^{\langle 110\rangle} > \psi_c^{\langle 111\rangle} >
+        \psi_c^{\langle 100\rangle}$ agrees with the experimental
+        measurements of Derry et~al.~\cite{Derry1982}.
+  \item Training data: $\sim$\num{250000} tracks. Pool A (\num{200000})
+        uniform-on-$S^2$ is generated first; Pool B ($\sim$\num{50000}) is
+        sized post-hoc to bring each of the nine
+        (axis $\times$ energy) bins up to a target of \num{3000} channeled
+        tracks, with Pool B samples drawn from $2\psi_c$ cones around the
+        chosen axes.
+  \item Crystal-orientation invariance handled via the 48-element octahedral
+        group $\mathrm{O}_h$ at training and inference, replacing v2's
+        $\mathrm{SO}(3)$ augmentation.
+  \item Stage~1 trains on the combined pool; Stage~2 fine-tunes the flow on
+        Pool A only, keeping the posterior prior uniform-on-$S^2$.
+  \item Evaluation: \num{50000} tracks (\num{40000} uniform + \num{10000}
+        stratified) with full SBI calibration (SBC at $N=5000$, TARP,
+        per-parameter ECE), headline metrics by energy decade, geometric
+        baselines, and a zero-shot v2-on-SIIMPL cross-domain reference number.
+\end{itemize}
+
+\begin{thebibliography}{9}
+
+\bibitem{Lindhard1965}
+  J.~Lindhard,
+  ``Influence of crystal lattice on motion of energetic charged particles,''
+  \emph{Mat.\ Fys.\ Medd.\ Dan.\ Vid.\ Selsk.} \textbf{34}, no.~14 (1965).
+
+\bibitem{Gemmell1974}
+  D.~S.~Gemmell,
+  ``Channeling and related effects in the motion of charged particles through crystals,''
+  \emph{Rev.\ Mod.\ Phys.} \textbf{46}, 129 (1974).
+
+\bibitem{Kittel}
+  C.~Kittel,
+  \emph{Introduction to Solid State Physics}, 8th ed.\ (Wiley, 2005), Ch.~1.
+
+\bibitem{Derry1982}
+  T.~E.~Derry, R.~W.~Fearick, and J.~P.~F.~Sellschop,
+  ``Ion channeling in natural diamond. II.\ Critical angles,''
+  \emph{Phys.\ Rev.\ B} \textbf{26}, 17 (1982).
+
+\end{thebibliography}
+
+\end{document}
