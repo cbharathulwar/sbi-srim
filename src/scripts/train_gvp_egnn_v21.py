@@ -53,7 +53,18 @@ from src.models.egnn import (EGNNEmbedding, CachedEGNNEmbedding, DirectionHead, 
 from src.models.vmf_loss import axis_aware_vmf_nll, gaussian_nll
 
 # SBI Imports (only for building the flow architecture)
-from sbi.neural_nets import posterior_nn
+# Resilient across sbi 0.22 / 0.23 / 0.24+ — posterior_nn moved between versions.
+try:
+    from sbi.neural_nets import posterior_nn
+except ImportError:
+    try:
+        from sbi.neural_nets.factory import posterior_nn
+    except ImportError as _e:
+        raise ImportError(
+            "Could not import posterior_nn from sbi. Tried "
+            "sbi.neural_nets and sbi.neural_nets.factory. "
+            f"Installed sbi version may be incompatible. Original error: {_e}"
+        )
 
 
 # ================= CONFIGURATION =================
@@ -1052,7 +1063,11 @@ def main():
                                weights_only=False)
         best_flow = best_ckpt['flow_module']
 
-        from sbi.inference import SNPE
+        # SNPE renamed to NPE in newer sbi; alias for backward compatibility.
+        try:
+            from sbi.inference import SNPE
+        except ImportError:
+            from sbi.inference import NPE as SNPE
         from sbi.utils import BoxUniform
 
         # Use BoxUniform for posterior (SBI needs it for sampling)
