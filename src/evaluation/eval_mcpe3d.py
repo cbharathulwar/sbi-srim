@@ -67,9 +67,16 @@ class ContinuousEvaluator3D:
         # 1. Load and preprocess eval data (same pipeline as training)
         print(f"[Eval] Loading & preprocessing from {eval_csv_path}...")
 
-        # Get k from the posterior's embedding network
+        # Get k and n_max from the posterior's embedding network.
+        # ScalarAugmentedEmbedding wraps CachedEGNNEmbedding and doesn't
+        # forward .k; walk the .base chain to find it.
         emb_net = self.posterior.posterior_estimator.embedding_net
-        k_neighbors = emb_net.k
+        _e = emb_net
+        while _e is not None and not hasattr(_e, 'k'):
+            _e = getattr(_e, 'base', None)
+        if _e is None:
+            raise AttributeError(f"Cannot find 'k' on embedding chain: {type(emb_net)}")
+        k_neighbors = _e.k
         n_max_model = emb_net.n_max
 
         x_padded, mask, targets_tensor, n_max, knn_idx = preprocess_egnn(

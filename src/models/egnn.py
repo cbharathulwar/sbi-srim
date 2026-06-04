@@ -824,6 +824,7 @@ class ScalarAugmentedEmbedding(nn.Module):
         super().__init__()
         self.base = base_embedding          # frozen backbone
         self.n_max = n_max
+        self.k = base_embedding.k           # forward so eval code can find it
         self.register_buffer('scalar_mean', scalar_mean.float())
         self.register_buffer('scalar_std',  scalar_std.float())
         self.last_z = None
