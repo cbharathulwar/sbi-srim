@@ -23,7 +23,13 @@ from pathlib import Path
 
 import numpy as np
 
-SIIMPL_DIR = Path(r"C:/Users/walsworthlab/SIIMPL/siimpl/python")
+import os
+# Resolve the SIIMPL python package across machines: env override, the local
+# C:/siimpl install (this workstation), then the lab-machine path.
+_SIIMPL_CANDIDATES = [os.environ.get("SIIMPL_DIR"), r"C:/siimpl/python",
+                      r"C:/Users/walsworthlab/SIIMPL/siimpl/python"]
+SIIMPL_DIR = next((Path(p) for p in _SIIMPL_CANDIDATES if p and Path(p).exists()),
+                  Path(r"C:/siimpl/python"))
 sys.path.insert(0, str(SIIMPL_DIR))
 
 import warnings

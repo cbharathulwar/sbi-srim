@@ -31,7 +31,7 @@ def measure(csv_path: Path, out_path: Path, n_target: int, label: str):
     E_eV = E_keV * 1000.0
 
     print(f"\n{label} coverage (rotated lab-frame axes, N_target={n_target})")
-    print(f"{'Axis':<8} {'E-bin':<6} {'N':>9} {'Within ψ_c':>13} {'Frac':>8} "
+    print(f"{'Axis':<8} {'E-bin':<6} {'N':>9} {'Within psi_c':>13} {'Frac':>8} "
           f"{'Deficit':>9}")
     print("-" * 60)
 

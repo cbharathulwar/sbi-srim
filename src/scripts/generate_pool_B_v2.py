@@ -21,7 +21,12 @@ from pathlib import Path
 
 import numpy as np
 
-SIIMPL_DIR = Path(r"C:/Users/walsworthlab/SIIMPL/siimpl/python")
+import os
+# Resolve the SIIMPL python package across machines (see generate_pool_A_v2).
+_SIIMPL_CANDIDATES = [os.environ.get("SIIMPL_DIR"), r"C:/siimpl/python",
+                      r"C:/Users/walsworthlab/SIIMPL/siimpl/python"]
+SIIMPL_DIR = next((Path(p) for p in _SIIMPL_CANDIDATES if p and Path(p).exists()),
+                  Path(r"C:/siimpl/python"))
 sys.path.insert(0, str(SIIMPL_DIR))
 sys.path.insert(0, str(Path(__file__).resolve().parent))  # for channeling_axes
 

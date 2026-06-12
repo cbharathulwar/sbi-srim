@@ -4,6 +4,7 @@ verify per-bin coverage at rotated axes, and rename to canonical filenames.
 from __future__ import annotations
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 import numpy as np
@@ -12,7 +13,12 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from channeling_axes import AXES_LAB, D, PREFAC_eV_A
 
-DATA = Path(r"C:/Users/walsworthlab/Inverse ML/data/siimpl")
+# Resolve the data directory across machines: env override, the local repo, then
+# the lab-machine path.
+_DATA_CANDIDATES = [os.environ.get("SIIMPL_DATA_DIR"), r"C:/Inverse ML/data/siimpl",
+                    r"C:/Users/walsworthlab/Inverse ML/data/siimpl"]
+DATA = next((Path(p) for p in _DATA_CANDIDATES if p and Path(p).exists()),
+            Path(r"C:/Inverse ML/data/siimpl"))
 E_BINS = [(1.0, 4.66, "Low"), (4.66, 21.7, "Mid"), (21.7, 105.001, "High")]
 
 
@@ -28,7 +34,7 @@ def verify_coverage(df, n_target):
     v = tracks[["target_vx","target_vy","target_vz"]].to_numpy()
     E_keV = tracks["energy_keV"].to_numpy()
     E_eV = E_keV * 1000.0
-    print(f"{'Axis':<8} {'E-bin':<6} {'N':>9} {'Within ψ_c':>13} "
+    print(f"{'Axis':<8} {'E-bin':<6} {'N':>9} {'Within psi_c':>13} "
           f"{'Status':>10}")
     print("-" * 60)
     all_pass = True

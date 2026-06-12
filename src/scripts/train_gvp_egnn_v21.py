@@ -77,7 +77,10 @@ RESULTS_DIR   = BASE_DIR / "results/gvp_egnn_v21_siimpl"
 # Pool A spans ion_number < POOL_B_ION_START; Pool B is the channeling-fill
 # subset. Stage 2 (flow-only) is trained on Pool A only so the posterior's
 # implicit prior is uniform-on-S^2 (the prior we report against).
-POOL_B_ION_START = 245_000
+# 300k leaves a clean gap above Pool A's 250k ceiling (5,000 cfg x 50 ions),
+# so Pool B (ion_number >= 300_000) can never collide with or be mislabeled
+# as Pool A — the regeneration writes Pool B starting at 300_000.
+POOL_B_ION_START = 300_000
 
 # Output files
 CHECKPOINT_FILE  = RESULTS_DIR / "checkpoint.pt"
@@ -124,7 +127,7 @@ MAX_EPOCHS     = 200
 PATIENCE       = 30       # early stopping (stage 1)
 VAL_FRACTION   = 0.05     # 10k val tracks is plenty with 197k total
 GRAD_CLIP      = 1.0
-MAX_TRAIN_TRACKS = 280_000  # SIIMPL v2.1 train: 267k tracks (200k Pool A + 22k Pool B + headroom)
+MAX_TRAIN_TRACKS = 320_000  # SIIMPL v2.1 train: ~250k Pool A + expanded ~30-40k Pool B + headroom
 
 # Auxiliary loss weights (decay schedule)
 # v2: raised beta 10x (safe now that log_sigma is clamped in EnergyHead)
