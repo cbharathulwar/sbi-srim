@@ -40,6 +40,23 @@ except ImportError:
     from src.utils.data_utils import preprocess_egnn
 
 
+def _build_oh_group_eval():
+    """48 signed-permutation matrices = the octahedral group Oh (same set used
+    for training augmentation). Returned as a (48, 3, 3) float tensor."""
+    from itertools import permutations
+    mats = []
+    for perm in permutations([0, 1, 2]):
+        for sx in (-1, 1):
+            for sy in (-1, 1):
+                for sz in (-1, 1):
+                    M = np.zeros((3, 3), dtype=np.float32)
+                    M[0, perm[0]] = sx
+                    M[1, perm[1]] = sy
+                    M[2, perm[2]] = sz
+                    mats.append(M)
+    return torch.from_numpy(np.stack(mats))
+
+
 class ContinuousEvaluator3D:
     def __init__(self, posterior, device=None):
         self.posterior = posterior
@@ -51,7 +68,8 @@ class ContinuousEvaluator3D:
 
         print(f"[Eval] Model detected on device: {self.device}")
 
-    def run_eval(self, eval_csv_path, num_samples=200, batch_size=500):
+    def run_eval(self, eval_csv_path, num_samples=200, batch_size=500,
+                 tta_group=False, n_tta=8):
         """
         Full posterior evaluation.
 
@@ -60,6 +78,13 @@ class ContinuousEvaluator3D:
             num_samples: number of posterior samples per track (200+ recommended
                          for calibration; 50 is too few for coverage analysis)
             batch_size: tracks per batch for GPU memory management
+            tta_group: if True, perform group (Oh) test-time augmentation — the
+                       posterior is symmetrized over n_tta octahedral elements by
+                       transforming the input coords, sampling, and mapping the
+                       direction samples back. Makes the prediction exactly
+                       Oh-symmetric and reduces sample variance. Pure inference
+                       cost (~n_tta x).
+            n_tta: number of Oh elements to average over (<= 48).
 
         Returns:
             results_df: DataFrame with point estimates AND posterior statistics
@@ -67,9 +92,9 @@ class ContinuousEvaluator3D:
         # 1. Load and preprocess eval data (same pipeline as training)
         print(f"[Eval] Loading & preprocessing from {eval_csv_path}...")
 
-        # Get k and n_max from the posterior's embedding network.
-        # ScalarAugmentedEmbedding wraps CachedEGNNEmbedding and doesn't
-        # forward .k; walk the .base chain to find it.
+        # Get k / n_max / n_phys / log_energy from the posterior's embedding.
+        # PhysicsAugmentedEmbedding exposes .k, .n_max, .n_phys, .log_energy
+        # directly; older wrappers may need a .base chain walk for .k.
         emb_net = self.posterior.posterior_estimator.embedding_net
         _e = emb_net
         while _e is not None and not hasattr(_e, 'k'):
@@ -78,9 +103,14 @@ class ContinuousEvaluator3D:
             raise AttributeError(f"Cannot find 'k' on embedding chain: {type(emb_net)}")
         k_neighbors = _e.k
         n_max_model = emb_net.n_max
+        self._n_phys = getattr(emb_net, 'n_phys', 0)
+        self._log_energy = getattr(emb_net, 'log_energy', False)
+        self._n_max_model = n_max_model
+        print(f"[Eval] Model: n_max={n_max_model}, k={k_neighbors}, "
+              f"n_phys={self._n_phys}, log_energy={self._log_energy}")
 
-        x_padded, mask, targets_tensor, n_max, knn_idx = preprocess_egnn(
-            eval_csv_path, k_neighbors=k_neighbors
+        x_padded, mask, targets_tensor, n_max, knn_idx, phys = preprocess_egnn(
+            eval_csv_path, k_neighbors=k_neighbors, return_phys=True
         )
 
         # Pad eval data to match model's n_max if needed
@@ -96,15 +126,20 @@ class ContinuousEvaluator3D:
                                             dtype=knn_idx.dtype)], dim=1)
             n_max = n_max_model
 
-        # Flatten same as training: coords + knn_idx (memory-efficient chunked)
+        # Flatten same as training: coords + knn_idx + phys (memory-efficient chunked)
         n_eval = x_padded.shape[0]
-        features = torch.empty(n_eval, n_max * (3 + k_neighbors), dtype=torch.float32)
+        features = torch.empty(n_eval, n_max * (3 + k_neighbors) + self._n_phys,
+                               dtype=torch.float32)
         features[:, :n_max * 3] = x_padded.view(n_eval, -1)
+        knn_end = n_max * (3 + k_neighbors)
         CHUNK = 10000
         for s in range(0, n_eval, CHUNK):
             e = min(s + CHUNK, n_eval)
-            features[s:e, n_max * 3:] = knn_idx[s:e].float().reshape(e - s, -1)
-        del x_padded, mask, knn_idx
+            features[s:e, n_max * 3:knn_end] = knn_idx[s:e].float().reshape(e - s, -1)
+        if self._n_phys:
+            features[:, knn_end:] = phys
+        self._coords_dim = n_max * 3   # for TTA: how many leading cols are coords
+        del x_padded, mask, knn_idx, phys
 
         targets = targets_tensor.numpy()
         num_tracks = len(features)
@@ -113,6 +148,16 @@ class ContinuousEvaluator3D:
         # 2. Sampling Loop
         all_samples = []
         sys.setrecursionlimit(3000)
+
+        if tta_group:
+            oh = _build_oh_group_eval().to(self.device)        # (48, 3, 3)
+            n_tta = int(min(n_tta, oh.shape[0]))
+            tta_elems = oh[:n_tta]
+            print(f"[Eval] Group test-time augmentation: averaging over {n_tta} Oh elements")
+        else:
+            tta_elems = None
+
+        flow = self.posterior.posterior_estimator
 
         with torch.no_grad():
             for i in range(0, num_tracks, batch_size):
@@ -123,19 +168,12 @@ class ContinuousEvaluator3D:
                 batch_ctx = features[i : i + batch_size].to(self.device)
 
                 try:
-                    # B. Sample bypassing SBI wrapper
-                    flow = self.posterior.posterior_estimator
+                    batch_samples = self._sample_batch(
+                        flow, batch_ctx, num_samples, tta_elems
+                    )  # (num_samples_eff, B, 4) on CPU, PHYSICAL units
 
-                    batch_samples = flow.sample((num_samples,), condition=batch_ctx)
-
-                    # Ensure shape is (num_samples, batch_size, 4)
-                    if batch_samples.shape[0] != num_samples:
-                        batch_samples = batch_samples.permute(1, 0, 2)
-
-                    batch_samples = batch_samples.cpu()
-
-                    # C. CLIPPING (Physical Sanity Check)
-                    batch_samples[:, :, 0] = torch.clamp(batch_samples[:, :, 0], min=0.001, max=100.0)
+                    # CLIPPING (physical sanity): energy in keV, directions on cube
+                    batch_samples[:, :, 0] = torch.clamp(batch_samples[:, :, 0], min=0.001, max=110.0)
                     batch_samples[:, :, 1:] = torch.clamp(batch_samples[:, :, 1:], min=-1.0, max=1.0)
 
                     all_samples.append(batch_samples)
@@ -158,7 +196,11 @@ class ContinuousEvaluator3D:
 
         pred_means = np.mean(samples, axis=0)  # (N_tracks, 4)
 
-        pred_E  = pred_means[:, 0]
+        # Energy: use the posterior MEDIAN as the point estimate. With log-energy
+        # modeling the physical-space posterior is right-skewed, so the median
+        # (= exp of the log-energy median) is the natural, less biased central
+        # value than the mean of the exponentiated samples.
+        pred_E  = np.median(samples[:, :, 0], axis=0)
         pred_vx = pred_means[:, 1]
         pred_vy = pred_means[:, 2]
         pred_vz = pred_means[:, 3]
@@ -327,6 +369,50 @@ class ContinuousEvaluator3D:
         print("=" * 65 + "\n")
 
         return results_df
+
+    def _raw_sample(self, flow, ctx, num_samples):
+        """Draw posterior samples for a batch of conditions. Returns a
+        (num_samples, B, 4) tensor on the model device, in the flow's native
+        parameter space (energy is log-keV if the model uses log_energy)."""
+        s = flow.sample((num_samples,), condition=ctx)
+        if s.shape[0] != num_samples:
+            s = s.permute(1, 0, 2)
+        return s
+
+    def _finalize_samples(self, s):
+        """Move to CPU and convert energy back to physical keV if the flow
+        models log-energy."""
+        s = s.detach().cpu().clone()
+        if getattr(self, '_log_energy', False):
+            s[:, :, 0] = torch.exp(s[:, :, 0])
+        return s
+
+    def _sample_batch(self, flow, batch_ctx, num_samples, tta_elems):
+        """Sample a batch, optionally with group (Oh) test-time augmentation.
+
+        For each Oh element g we rotate the coordinate block of the observation
+        by g, draw samples, and map the direction samples back to the lab frame
+        (lab_dir_row = sampled_dir_row @ g — the inverse of the training-time
+        convention coords->g.p, target->g.target). The physics block and the kNN
+        indices are Oh-invariant, so they are left untouched. Pooling across g
+        yields an (approximately exactly) Oh-symmetric, lower-variance posterior.
+        """
+        if tta_elems is None:
+            return self._finalize_samples(self._raw_sample(flow, batch_ctx, num_samples))
+
+        B = batch_ctx.shape[0]
+        coords_dim = self._coords_dim
+        n_max = self._n_max_model
+        parts = []
+        for g in tta_elems:
+            ctx_g = batch_ctx.clone()
+            coords = ctx_g[:, :coords_dim].view(B, n_max, 3)
+            coords = torch.matmul(coords, g.transpose(0, 1))   # p -> g.p  (coords @ g^T)
+            ctx_g[:, :coords_dim] = coords.reshape(B, -1)
+            s = self._raw_sample(flow, ctx_g, num_samples)     # (num_samples, B, 4)
+            s[:, :, 1:4] = torch.matmul(s[:, :, 1:4], g)        # map dirs back to lab
+            parts.append(s)
+        return self._finalize_samples(torch.cat(parts, dim=0))
 
     def plot_results(self, results_df, save_dir=None):
         """

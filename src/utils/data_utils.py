@@ -980,47 +980,75 @@ def load_and_pad_3d_tracks(csv_path, max_points="auto"):
 # EGNN PREPROCESSING (Pipeline C)
 # ============================================================
 
-def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
+def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8, return_phys=False):
     """
     Preprocess 3D tracks for EGNN Pipeline C.
 
     Per track:
       1. Center (subtract centroid)
-      2. PCA-align (SVD so principal axis = x-axis)
-      3. Normalize (divide by max spatial extent -> coords in [-1, 1])
-      4. Zero-pad to N_max, create boolean mask
+      2. Normalize (divide by max spatial extent -> coords in [-1, 1])
+      3. Zero-pad to N_max, create boolean mask
+      4. Compute Oh-invariant physics descriptors (size + shape) — see below
+
+    NOTE: No PCA alignment. The EGNN is E(n)-equivariant and the targets live in
+    the lab frame; PCA alignment would destroy the coord<->direction relationship.
 
     CRITICAL: Do NOT flip/orient tracks by density.
     The network must learn head-tail discrimination itself.
 
+    Physics descriptors (the per-track `phys` array, shape (N_tracks, 5)):
+      The normalization in step 2 divides out the absolute spatial scale, which
+      is a primary energy cue and a channeling discriminator. We capture it back
+      as explicit conditioning features, computed on the centered *physical*
+      (un-normalized) coordinates. All five are invariant under the Oh group
+      (signed axis permutations), so they are consistent with the training-time
+      augmentation:
+        0: log(n_vac + 1)            — vacancy count (E proxy)
+        1: log(max_extent + eps)     — absolute size (L-inf radius, Angstrom)
+        2: log(R_gyration + eps)     — absolute size (RMS radius, Angstrom)
+        3: lambda1 / sum(lambda)     — elongation (1 => perfectly linear track)
+        4: lambda2 / sum(lambda)     — secondary spread
+      where lambda1>=lambda2>=lambda3 are eigenvalues of the coordinate
+      covariance. The extent/n_vac and elongation features let the model see the
+      "long but sparse" signature of channeling tracks, which the normalized
+      geometry alone hides.
+
     Results are cached to disk as .egnn_cache.pt for instant reloading.
-    Cache auto-invalidates when k_neighbors or max_points change.
+    Cache auto-invalidates when k_neighbors or max_points change (and on the v3
+    bump that introduced `phys`).
 
     Args:
         csv_path: path to CSV with columns [x, y, z, ion_number, energy_keV,
                   target_vx, target_vy, target_vz]
         max_points: "auto" to use 95th percentile, or an integer
         k_neighbors: number of kNN neighbors to precompute
+        return_phys: if True, also return the (N_tracks, 5) physics descriptor
+                     array. Default False for backward compatibility with the
+                     older 5-tuple callers.
 
     Returns:
-        x_padded: (N_tracks, N_max, 3) zero-padded, PCA-aligned coordinates
+        x_padded: (N_tracks, N_max, 3) zero-padded, normalized coordinates
         mask:     (N_tracks, N_max) boolean mask (True = real point)
         theta:    (N_tracks, 4) ground truth [E, Vx, Vy, Vz]
         n_max:    int, the padding length (needed by EGNNEmbedding)
         knn_idx:  (N_tracks, N_max, k) precomputed kNN neighbor indices (-1 = pad)
+        phys:     (N_tracks, 5) physics descriptors  [only if return_phys=True]
     """
     csv_path = Path(csv_path)
 
-    # --- Check disk cache ---
-    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}_v2.egnn_cache.pt"
+    # --- Check disk cache (v3: added per-track physics descriptors) ---
+    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}_v3.egnn_cache.pt"
     if cache_path.exists():
         print(f"[EGNN] Loading cached preprocessed data from {cache_path.name}")
         cached = torch.load(cache_path, weights_only=False)
         knn = cached['knn_idx']
         print(f"[EGNN] Loaded {cached['x_padded'].shape[0]} tracks, "
               f"N_max={cached['n_max']}, k={k_neighbors}, "
-              f"knn dtype={knn.dtype}")
+              f"knn dtype={knn.dtype}, phys={cached['phys'].shape}")
         # Keep knn_idx as int16 — converted to float32 during flattening
+        if return_phys:
+            return (cached['x_padded'], cached['mask'], cached['theta'],
+                    cached['n_max'], knn, cached['phys'])
         return (cached['x_padded'], cached['mask'], cached['theta'],
                 cached['n_max'], knn)
 
@@ -1085,6 +1113,9 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     x_padded = np.zeros((N_tracks, N_max, 3), dtype=np.float32)
     mask = np.zeros((N_tracks, N_max), dtype=bool)
     knn_idx = np.full((N_tracks, N_max, k_neighbors), -1, dtype=np.int16)
+    # Per-track Oh-invariant physics descriptors (size + shape). See docstring.
+    N_PHYS_FEATS = 5
+    phys = np.zeros((N_tracks, N_PHYS_FEATS), dtype=np.float32)
 
     mem_mb = (x_padded.nbytes + mask.nbytes + knn_idx.nbytes) / 1e6
     print(f"[EGNN] Output arrays allocated: {mem_mb:.0f} MB "
@@ -1106,8 +1137,27 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
         centroid = points.mean(axis=0)
         centered = points - centroid
 
-        # 2. Normalize by max spatial extent (coords in [-1, 1])
+        # --- Physics descriptors on the CENTERED PHYSICAL coords (pre-normalize) ---
+        # Computed on the full track (before any truncation) so they reflect the
+        # true cascade size/shape. All five are Oh-invariant.
+        n_vac_full = centered.shape[0]
         max_extent = np.abs(centered).max()
+        sq_radii = (centered ** 2).sum(axis=1)        # ||p||^2 per point
+        r_gyration = np.sqrt(sq_radii.mean())          # RMS radius (Angstrom)
+        # Covariance eigenvalues -> elongation / shape (rotation+reflection inv.)
+        cov = (centered.T @ centered) / n_vac_full     # 3x3 symmetric
+        evals = np.linalg.eigvalsh(cov)                # ascending
+        evals = np.clip(evals, 0.0, None)
+        lam_sum = float(evals.sum()) + 1e-12
+        elong1 = float(evals[2]) / lam_sum             # largest eigenvalue share
+        elong2 = float(evals[1]) / lam_sum             # middle eigenvalue share
+        phys[i, 0] = np.log(n_vac_full + 1.0)
+        phys[i, 1] = np.log(max_extent + 1e-6)
+        phys[i, 2] = np.log(r_gyration + 1e-6)
+        phys[i, 3] = elong1
+        phys[i, 4] = elong2
+
+        # 2. Normalize by max spatial extent (coords in [-1, 1])
         if max_extent > 0:
             centered = centered / max_extent
 
@@ -1137,13 +1187,17 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8):
     mask = torch.from_numpy(mask)
     theta = torch.tensor(theta_list, dtype=torch.float32)
     knn_idx = torch.from_numpy(knn_idx)  # int16, NOT converted to long
+    phys = torch.from_numpy(phys)        # (N_tracks, 5) float32
 
     print(f"[EGNN] x_padded: {x_padded.shape}  mask: {mask.shape}  "
-          f"theta: {theta.shape}  knn_idx: {knn_idx.shape} ({knn_idx.dtype})")
+          f"theta: {theta.shape}  knn_idx: {knn_idx.shape} ({knn_idx.dtype})  "
+          f"phys: {phys.shape}")
 
     # Save cache to disk (int16 → ~1.1 GB file vs ~4.8 GB)
     torch.save({'x_padded': x_padded, 'mask': mask, 'theta': theta,
-                'n_max': N_max, 'knn_idx': knn_idx}, cache_path)
+                'n_max': N_max, 'knn_idx': knn_idx, 'phys': phys}, cache_path)
     print(f"[EGNN] Cached preprocessed data -> {cache_path.name}")
 
+    if return_phys:
+        return x_padded, mask, theta, N_max, knn_idx, phys
     return x_padded, mask, theta, N_max, knn_idx

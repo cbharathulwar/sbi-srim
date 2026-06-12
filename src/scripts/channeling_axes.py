@@ -10,8 +10,11 @@ hemisphere (since beam direction must have v_z >= 0 for SIIMPL).
 from __future__ import annotations
 import numpy as np
 
-# SIIMPL's pre-rotation (matches simulator._DIAMOND_PREROT_DEG)
-DIAMOND_PREROT_DEG = 35.0
+# SIIMPL's pre-rotation (matches simulator._DIAMOND_PREROT_DEG).
+# Now 0.0: crystal sits in canonical orientation, only the beam is rotated, so
+# the channeling axes in the lab frame are the literal <hkl> directions (no
+# Ry(35) twist). Keep this in lockstep with simulator._DIAMOND_PREROT_DEG.
+DIAMOND_PREROT_DEG = 0.0
 
 # psi_c formula constants
 PREFAC_eV_A = 1036.8   # 2 Z1 Z2 e^2 for C-on-C in eV*A

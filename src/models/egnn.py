@@ -451,10 +451,19 @@ class EnergyHead(nn.Module):
     """
     Predicts energy and log-uncertainty from the latent embedding z,
     for heteroscedastic Gaussian auxiliary loss.
+
+    Args:
+        log_energy: if True, the head predicts the target directly in
+            (natural) log-energy space — no softplus positivity constraint,
+            since log(E) can be negative for E < 1 keV. The Gaussian NLL is
+            then evaluated in log space (a log-normal energy model), which
+            matches the log-uniform energy prior used to generate the data.
+            sigma_clamp is widened accordingly.
     """
 
-    def __init__(self, d_latent=384):
+    def __init__(self, d_latent=384, log_energy=False):
         super().__init__()
+        self.log_energy = log_energy
         self.net = nn.Sequential(
             nn.Linear(d_latent, 128), nn.SiLU(),
             nn.Linear(128, 64), nn.SiLU(),
@@ -463,8 +472,12 @@ class EnergyHead(nn.Module):
 
     def forward(self, z):
         out = self.net(z)
-        E_pred = F.softplus(out[:, 0])     # energy > 0
-        log_sigma = out[:, 1].clamp(-2.0, 4.0)  # σ ∈ [0.14, 55] keV
+        if self.log_energy:
+            E_pred = out[:, 0]                       # log-energy, unconstrained
+            log_sigma = out[:, 1].clamp(-6.0, 3.0)   # sigma of log E
+        else:
+            E_pred = F.softplus(out[:, 0])           # energy > 0 (linear keV)
+            log_sigma = out[:, 1].clamp(-2.0, 4.0)   # σ ∈ [0.14, 55] keV
         return E_pred, log_sigma
 
 
@@ -570,15 +583,29 @@ class VectorReadout(nn.Module):
     """
     Channel B: Rotation-equivariant readout for direction.
 
-    K attention heads, each producing a weighted sum of positions,
-    projected to higher dimension.
+    Two complementary equivariant mechanisms:
+      (1) K attention heads, each producing a weighted sum of positions
+          (a FIRST moment — a weighted centroid).
+      (2) [optional] Principal-axis features: the top-n_axes eigenvectors of
+          the per-track coordinate covariance (a SECOND moment), extracted by
+          differentiable power iteration. A recoil track is elongated ALONG the
+          recoil direction, so its principal axis IS the directional signal —
+          something a convex combination of points cannot represent on its own.
+          Each axis is sign-fixed by the skewness of the point projection along
+          it, so the axis vector also carries head/tail orientation. Equivariant
+          by construction (eigenvectors of an equivariant covariance), and
+          additive — the model is free to ignore it.
     """
 
-    def __init__(self, hidden_dim, n_heads=8, d_proj=32):
+    def __init__(self, hidden_dim, n_heads=8, d_proj=32,
+                 use_axis_feats=True, n_axes=2, axis_iters=4):
         super().__init__()
         self.n_heads = n_heads
         self.d_proj = d_proj
-        self.output_dim = n_heads * d_proj
+        self.use_axis_feats = use_axis_feats
+        self.n_axes = n_axes
+        self.axis_iters = axis_iters
+        self.output_dim = n_heads * d_proj + (n_axes * d_proj if use_axis_feats else 0)
 
         # Attention MLPs (one per head)
         self.attn_mlps = nn.ModuleList([
@@ -596,6 +623,13 @@ class VectorReadout(nn.Module):
             for _ in range(n_heads)
         ])
 
+        # Separate projections for the principal-axis vectors
+        if use_axis_feats:
+            self.axis_projections = nn.ModuleList([
+                nn.Linear(3, d_proj, bias=False)
+                for _ in range(n_axes)
+            ])
+
     def forward(self, h, x, batch_vec, real_counts):
         """
         Args:
@@ -605,7 +639,7 @@ class VectorReadout(nn.Module):
             real_counts: (B,)
 
         Returns:
-            e_vector: (B, K * d_proj) concatenated projected attention vectors
+            e_vector: (B, output_dim) concatenated equivariant features
         """
         B = real_counts.shape[0]
         device = h.device
@@ -633,7 +667,66 @@ class VectorReadout(nn.Module):
             p_k = self.projections[k](v_k)  # (B, d_proj)
             head_outputs.append(p_k)
 
-        return torch.cat(head_outputs, dim=-1)  # (B, K * d_proj)
+        # --- Principal-axis (second-moment) features ---
+        if self.use_axis_feats:
+            axis_vecs = self._principal_axes(x, batch_vec, real_counts, B)
+            for a in range(self.n_axes):
+                head_outputs.append(self.axis_projections[a](axis_vecs[a]))
+
+        return torch.cat(head_outputs, dim=-1)  # (B, output_dim)
+
+    def _principal_axes(self, x, batch_vec, real_counts, B):
+        """Top-n_axes eigenvectors of the per-track coordinate covariance,
+        via differentiable power iteration with deflation. Each is sign-fixed
+        by the skewness of the point projection along it (head/tail aware).
+        Returns a list of n_axes tensors, each (B, 3) and equivariant."""
+        device, dtype = x.device, x.dtype
+        counts = real_counts.clamp(min=1).to(dtype)
+
+        # Per-track centroid and centered coordinates
+        csum = torch.zeros(B, 3, device=device, dtype=dtype)
+        csum.scatter_add_(0, batch_vec.unsqueeze(-1).expand_as(x), x)
+        centroid = csum / counts.unsqueeze(-1)
+        xc = x - centroid[batch_vec]  # (total_real, 3)
+
+        # Per-track covariance (B, 3, 3)
+        outer = xc.unsqueeze(-1) * xc.unsqueeze(-2)  # (total_real, 3, 3)
+        Csum = torch.zeros(B, 3, 3, device=device, dtype=dtype)
+        Csum.scatter_add_(0, batch_vec.view(-1, 1, 1).expand_as(outer), outer)
+        C = Csum / counts.view(B, 1, 1)
+
+        axes = []
+        C_work = C
+        for a in range(self.n_axes):
+            v, lam = self._power_iteration(C_work, self.axis_iters)
+            v = self._sign_fix(v, xc, batch_vec, B)
+            axes.append(v)
+            # Deflate so the next iteration finds the next eigenvector
+            C_work = C_work - lam.view(B, 1, 1) * torch.bmm(v.unsqueeze(-1), v.unsqueeze(1))
+        return axes
+
+    @staticmethod
+    def _power_iteration(C, n_iter):
+        """Dominant eigenvector of symmetric PSD C (B,3,3) by power iteration.
+        Deterministic [1,1,1] init (no RNG); eps-guarded normalization."""
+        B = C.shape[0]
+        v = torch.ones(B, 3, device=C.device, dtype=C.dtype)
+        v = F.normalize(v, dim=-1, eps=1e-8)
+        for _ in range(n_iter):
+            v = torch.bmm(C, v.unsqueeze(-1)).squeeze(-1)  # (B, 3)
+            v = F.normalize(v, dim=-1, eps=1e-8)
+        lam = torch.einsum('bi,bij,bj->b', v, C, v)  # Rayleigh quotient (B,)
+        return v, lam
+
+    @staticmethod
+    def _sign_fix(v, xc, batch_vec, B):
+        """Orient v so the third moment (skewness) of the point projection along
+        v is non-negative — an equivariant, head/tail-meaningful sign choice."""
+        proj = (xc * v[batch_vec]).sum(-1)  # (total_real,)
+        skew = torch.zeros(B, device=v.device, dtype=v.dtype)
+        skew.scatter_add_(0, batch_vec, proj.pow(3))
+        sign = torch.where(skew >= 0, torch.ones_like(skew), -torch.ones_like(skew))
+        return v * sign.unsqueeze(-1)
 
     def _scatter_max(self, src, index, num_groups):
         """Compute per-group max for numerically stable softmax."""
@@ -694,6 +787,8 @@ class EGNNEmbedding(nn.Module):
         d_latent=256,
         use_gvp=False,
         v_dim=8,
+        use_axis_feats=True,
+        n_axes=2,
     ):
         super().__init__()
         self.n_max = n_max
@@ -707,7 +802,10 @@ class EGNNEmbedding(nn.Module):
 
         # Readout
         self.scalar_readout = ScalarReadout(hidden_dim)
-        self.vector_readout = VectorReadout(hidden_dim, n_heads=n_heads, d_proj=d_proj)
+        self.vector_readout = VectorReadout(
+            hidden_dim, n_heads=n_heads, d_proj=d_proj,
+            use_axis_feats=use_axis_feats, n_axes=n_axes,
+        )
         self.fusion = FusionMLP(
             scalar_dim=self.scalar_readout.output_dim,
             vector_dim=self.vector_readout.output_dim,
@@ -855,4 +953,64 @@ class ScalarAugmentedEmbedding(nn.Module):
         z_aug = torch.cat([z, sf], dim=-1)                 # (B, D_LATENT + 2)
         self.last_z = z_aug
         self.base.last_z = z_aug                           # keep aux-head cache in sync
+        return z_aug
+
+
+# ============================================================
+# Physics-Augmented Embedding (unified, used in BOTH training stages)
+# ============================================================
+
+class PhysicsAugmentedEmbedding(nn.Module):
+    """
+    Wraps an EGNNEmbedding backbone and appends a block of precomputed,
+    Oh-invariant physics descriptors to the latent z, enriching the flow
+    conditioning with size/shape information that the per-track-normalized
+    geometry hides from the backbone:
+
+        [log n_vac, log max_extent, log R_gyration, elongation1, elongation2]
+
+    These are computed once in `preprocess_egnn` (on the physical, un-normalized
+    coordinates) and carried as the trailing `n_phys` columns of x_flat:
+
+        x_flat = [ coords (n_max*3) | knn_idx (n_max*k) | phys (n_phys) ]
+
+    The descriptors are standardized here with training-set statistics. Because
+    they are Oh-invariant, they are unchanged by the training-time augmentation
+    (and by group test-time augmentation), so they can be precomputed once.
+
+    This replaces the Stage-2-only ScalarAugmentedEmbedding: the physics features
+    are now available from Stage 1, so the whole flow (not just a fine-tuned
+    head) can exploit them. Output dim: d_latent + n_phys.
+
+    Attributes exposed for the eval/diagnostics code:
+        .k, .n_max     — forwarded from the backbone (chain-walk lookup)
+        .n_phys        — number of trailing physics columns
+        .log_energy    — whether the flow's energy axis (theta[:,0]) is modeled
+                         in natural-log space (eval must exp() the samples)
+    """
+
+    def __init__(self, base_embedding: 'EGNNEmbedding', n_max: int, k: int,
+                 n_phys: int, phys_mean: torch.Tensor, phys_std: torch.Tensor,
+                 log_energy: bool = False):
+        super().__init__()
+        self.base = base_embedding
+        self.n_max = n_max
+        self.k = k
+        self.n_phys = n_phys
+        self.log_energy = log_energy
+        self.register_buffer('phys_mean', phys_mean.float())
+        self.register_buffer('phys_std', phys_std.float())
+        self.last_z = None
+
+    def forward(self, x_flat: torch.Tensor) -> torch.Tensor:
+        core_dim = self.n_max * (3 + self.k)
+        x_core = x_flat[:, :core_dim]                 # coords + knn for the backbone
+        phys = x_flat[:, core_dim:core_dim + self.n_phys]   # (B, n_phys)
+
+        z = self.base(x_core)                         # (B, d_latent)
+
+        phys_std = (phys - self.phys_mean) / self.phys_std.clamp(min=1e-8)
+        z_aug = torch.cat([z, phys_std], dim=-1)      # (B, d_latent + n_phys)
+
+        self.last_z = z_aug
         return z_aug

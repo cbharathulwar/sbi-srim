@@ -48,8 +48,8 @@ from torch.utils.tensorboard import SummaryWriter
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 from src.utils.data_utils import preprocess_egnn
-from src.models.egnn import (EGNNEmbedding, CachedEGNNEmbedding, DirectionHead, EnergyHead,
-                              ScalarAugmentedEmbedding)
+from src.models.egnn import (EGNNEmbedding, DirectionHead, EnergyHead,
+                              PhysicsAugmentedEmbedding)
 from src.models.vmf_loss import axis_aware_vmf_nll, gaussian_nll
 
 # SBI Imports (only for building the flow architecture)
@@ -93,11 +93,26 @@ K_NEIGHBORS    = 16       # same
 N_HEADS        = 8        # same
 D_PROJ         = 48       # up from 32
 D_LATENT       = 384      # up from 256
-N_SCALAR_FEATS = 2        # scalar features appended to z in Stage 2 (n_vac, lateral_spread)
-D_AUG          = D_LATENT + N_SCALAR_FEATS  # augmented conditioning dim for Stage 2 flow
 V_DIM          = 8        # GVP vector channels
-NUM_TRANSFORMS = 8        # NSF coupling layers (was 12, reduced for speed)
-NSF_HIDDEN     = 192      # NSF hidden features (up from 128)
+USE_AXIS_FEATS = True     # add principal-axis (2nd-moment) features to vector readout
+N_AXES         = 2        # number of principal axes appended in the vector readout
+
+# Physics descriptors appended to the latent in BOTH stages (computed in
+# preprocess_egnn): [log n_vac, log max_extent, log R_gyration, elong1, elong2].
+# These restore the absolute size/shape that per-track normalization divides out
+# — a primary energy cue and the key channeling discriminator.
+N_PHYS_FEATS   = 5
+D_AUG          = D_LATENT + N_PHYS_FEATS   # conditioning dim seen by the flow / aux heads
+
+# Energy is generated log-uniformly over [1, 105] keV, so we model it in natural
+# log space: matches the prior, equalizes relative resolution across the decade,
+# and makes theta z-scoring sensible. Eval exp()s the samples back to keV.
+LOG_ENERGY     = True
+E_MIN_KEV      = 1.0
+E_MAX_KEV      = 105.0
+
+NUM_TRANSFORMS = 12       # NSF coupling layers (up from 8 — more posterior capacity)
+NSF_HIDDEN     = 256      # NSF hidden features (up from 192)
 
 # Training hyperparameters
 BATCH_SIZE     = 256
@@ -221,46 +236,32 @@ def apply_oh_augmentation(x_batch, theta_batch, n_max):
     return x_batch, theta_batch
 
 
-def build_flow(embedding_net, n_max, k, d_latent, device):
+def _dummy_theta(n=100):
+    """Representative theta for SBI's theta z-scoring stats. Energy axis matches
+    the data distribution (log-uniform over [E_MIN, E_MAX], in log space if
+    LOG_ENERGY) so the standardization is sensible; directions are unit vectors."""
+    dummy = torch.zeros(n, 4)
+    if LOG_ENERGY:
+        lo, hi = math.log(E_MIN_KEV), math.log(E_MAX_KEV)
+        dummy[:, 0] = torch.rand(n) * (hi - lo) + lo
+    else:
+        dummy[:, 0] = torch.rand(n) * E_MAX_KEV
+    dummy[:, 1:4] = F.normalize(torch.randn(n, 3), dim=-1)
+    return dummy
+
+
+def build_flow(aug_embedding, n_max, k, n_phys, device):
     """
-    Build the NSF flow using SBI's posterior_nn factory.
+    Build an NSF flow conditioned on the physics-augmented embedding.
 
-    Returns the instantiated NFlowsFlow object (ready for .loss() calls).
+    The embedding is passed directly as embedding_net (already wrapped). The flat
+    observation layout is [coords (n_max*3) | knn (n_max*k) | phys (n_phys)].
+
+    z_score_x="none": EGNN already normalizes coords to [-1,1] and the physics
+        block is standardized inside the embedding.
+    z_score_theta="independent": SBI standardizes theta (energy vs direction
+        scale mismatch would otherwise cause NaNs).
     """
-    # Wrap embedding in CachedEGNNEmbedding for aux head access
-    cached_embedding = CachedEGNNEmbedding(embedding_net)
-
-    # Create the flow builder function
-    # z_score_x="none": EGNN already normalizes coords to [-1,1]
-    # z_score_theta="independent": let SBI standardize theta (E is 0-105,
-    #   directions are -1 to 1 — the scale mismatch causes NaN without z-scoring)
-    build_fn = posterior_nn(
-        model="nsf",
-        embedding_net=cached_embedding,
-        hidden_features=NSF_HIDDEN,
-        num_transforms=NUM_TRANSFORMS,
-        z_score_x="none",
-        z_score_theta="independent",
-    )
-
-    # Instantiate the flow by calling build_fn with REPRESENTATIVE sample data
-    # SBI uses this to compute z-scoring statistics for theta
-    # Must reflect actual data distribution, not random noise
-    dummy_theta = torch.zeros(100, 4)
-    dummy_theta[:, 0] = torch.rand(100) * 105.0          # Energy: [0, 105]
-    dummy_theta[:, 1:4] = F.normalize(torch.randn(100, 3), dim=-1)  # unit dirs
-    dummy_x = torch.randn(100, n_max * (3 + k))
-
-    flow = build_fn(dummy_theta, dummy_x)
-    flow = flow.to(device)
-
-    return flow, cached_embedding
-
-
-def build_flow_from_embedding(aug_embedding, n_max, k, d_aug, device):
-    """Build a fresh NSF flow conditioned on an already-wrapped embedding.
-    Used for Stage 2 with ScalarAugmentedEmbedding (d_aug = D_LATENT + N_SCALAR_FEATS).
-    The embedding is NOT wrapped again — pass it directly as embedding_net."""
     build_fn = posterior_nn(
         model="nsf",
         embedding_net=aug_embedding,
@@ -269,11 +270,8 @@ def build_flow_from_embedding(aug_embedding, n_max, k, d_aug, device):
         z_score_x="none",
         z_score_theta="independent",
     )
-    dummy_theta = torch.zeros(100, 4)
-    dummy_theta[:, 0] = torch.rand(100) * 105.0
-    dummy_theta[:, 1:4] = F.normalize(torch.randn(100, 3), dim=-1)
-    dummy_x = torch.randn(100, n_max * (3 + k))
-    flow = build_fn(dummy_theta, dummy_x)
+    dummy_x = torch.randn(100, n_max * (3 + k) + n_phys)
+    flow = build_fn(_dummy_theta(100), dummy_x)
     return flow.to(device)
 
 
@@ -296,12 +294,18 @@ def prepare_data(args, batch_size=BATCH_SIZE):
         val_loader:          Pool A + Pool B (validation)
         train_loader_poolA:  Pool A subset of train (Stage 2 training)
         n_max:               padding length
-        scalar_mean/std:     scalar feature normalization stats
+        phys_mean/std:       physics-descriptor normalization stats (5-dim)
     """
     print("[DATA] Preprocessing training data (EGNN pipeline)...")
-    x_padded, mask, theta_train, n_max, knn_idx = preprocess_egnn(
-        TRAIN_CSV, k_neighbors=K_NEIGHBORS
+    x_padded, mask, theta_train, n_max, knn_idx, phys = preprocess_egnn(
+        TRAIN_CSV, k_neighbors=K_NEIGHBORS, return_phys=True
     )
+
+    # Model energy in natural-log space (matches the log-uniform generation prior)
+    if LOG_ENERGY:
+        theta_train[:, 0] = torch.log(theta_train[:, 0].clamp(min=1e-3))
+        print(f"[DATA] Energy modeled in log space: "
+              f"logE in [{theta_train[:,0].min():.3f}, {theta_train[:,0].max():.3f}]")
 
     # Recover per-track ion_number (preprocess_egnn sorted-by-ion_number
     # and dropped n<3, so the alignment is recoverable from the CSV alone).
@@ -330,44 +334,44 @@ def prepare_data(args, batch_size=BATCH_SIZE):
         mask = mask[indices]
         theta_train = theta_train[indices]
         knn_idx = knn_idx[indices]
+        phys = phys[indices]
         track_ions = track_ions[indices]
         mode = 'smoke test' if args.smoke else 'memory cap'
         print(f"[DATA] Subsampled {n_total:,} -> {n_use:,} tracks ({mode})")
 
     # Print parameter coverage
-    labels = ['Energy', 'Vx', 'Vy', 'Vz']
+    labels = ['logE' if LOG_ENERGY else 'Energy', 'Vx', 'Vy', 'Vz']
     print(f"[DATA] Parameter coverage:")
     for j, name in enumerate(labels):
         col = theta_train[:, j]
         print(f"        {name:8s}: min={col.min():.3f}  max={col.max():.3f}  "
               f"mean={col.mean():.3f}  std={col.std():.3f}")
 
-    # Compute scalar feature normalisation stats (before deleting x_padded/mask)
-    _n_vac   = mask.sum(dim=1).float()                              # (N,)
-    _yz      = x_padded[:, :, 1:]                                   # (N, N_max, 2)
-    _mf      = mask.float().unsqueeze(-1)
-    _yz_mean = (_yz * _mf).sum(dim=1) / _n_vac.unsqueeze(-1).clamp(min=1)
-    _yz_dev  = (_yz - _yz_mean.unsqueeze(1)) * _mf
-    _lat_var = (_yz_dev.pow(2) * _mf).sum(dim=(1, 2)) / _n_vac.clamp(min=1)
-    _log_nv  = torch.log(_n_vac + 1.0)
-    _log_lv  = torch.log(_lat_var + 1e-4)
-    scalar_mean = torch.stack([_log_nv.mean(), _log_lv.mean()])
-    scalar_std  = torch.stack([_log_nv.std().clamp(min=1e-8), _log_lv.std().clamp(min=1e-8)])
-    print(f"[DATA] Scalar stats: log_nvac={scalar_mean[0]:.3f}±{scalar_std[0]:.3f}  "
-          f"log_latvar={scalar_mean[1]:.3f}±{scalar_std[1]:.3f}")
-    del _n_vac, _yz, _mf, _yz_mean, _yz_dev, _lat_var, _log_nv, _log_lv
+    # Physics-descriptor normalization stats (standardized inside the embedding).
+    # phys columns: [log n_vac, log max_extent, log R_gyration, elong1, elong2]
+    phys_mean = phys.mean(dim=0)
+    phys_std  = phys.std(dim=0).clamp(min=1e-8)
+    _pnames = ['log_nvac', 'log_extent', 'log_Rgyr', 'elong1', 'elong2']
+    print("[DATA] Physics descriptor stats (mean±std):")
+    for _j, _nm in enumerate(_pnames):
+        print(f"        {_nm:11s}: {phys_mean[_j]:.3f} ± {phys_std[_j]:.3f}")
 
-    # Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k)
+    # Flatten for SBI: coords (N_max*3) + knn_idx (N_max*k) + phys (N_PHYS)
     n_tracks = x_padded.shape[0]
-    x_flat = torch.empty(n_tracks, n_max * (3 + K_NEIGHBORS), dtype=torch.float32)
+    flat_dim = n_max * (3 + K_NEIGHBORS) + N_PHYS_FEATS
+    x_flat = torch.empty(n_tracks, flat_dim, dtype=torch.float32)
     x_flat[:, :n_max * 3] = x_padded.view(n_tracks, -1)
     del x_padded
 
     CHUNK = 10000
+    knn_block_end = n_max * (3 + K_NEIGHBORS)
     for start in range(0, n_tracks, CHUNK):
         end = min(start + CHUNK, n_tracks)
-        x_flat[start:end, n_max * 3:] = knn_idx[start:end].float().reshape(end - start, -1)
-    del knn_idx, mask
+        x_flat[start:end, n_max * 3:knn_block_end] = \
+            knn_idx[start:end].float().reshape(end - start, -1)
+    # Trailing physics columns
+    x_flat[:, knn_block_end:] = phys
+    del knn_idx, mask, phys
     gc.collect()
 
     print(f"[DATA] x_flat shape: {x_flat.shape}")
@@ -426,7 +430,7 @@ def prepare_data(args, batch_size=BATCH_SIZE):
           f"({len(train_loader_poolA)} batches) — Stage 2")
     print(f"[DATA] Val:          {n_val:,} tracks ({len(val_loader)} batches)")
 
-    return train_loader, val_loader, train_loader_poolA, n_max, scalar_mean, scalar_std
+    return train_loader, val_loader, train_loader_poolA, n_max, phys_mean, phys_std
 
 
 def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
@@ -680,12 +684,15 @@ def main():
     # 1. Load data
     print(f"\n[STEP 1] Loading and preprocessing data...")
     (train_loader, val_loader, train_loader_poolA,
-     n_max, scalar_mean, scalar_std) = prepare_data(args, batch_size=batch_size)
+     n_max, phys_mean, phys_std) = prepare_data(args, batch_size=batch_size)
 
     # 2. Build model components
     print(f"\n[STEP 2] Building GVP-EGNN + NSF flow...")
     print(f"  EGNN: hidden_dim={HIDDEN_DIM}, layers={N_LAYERS}, GVP v_dim={V_DIM}")
-    print(f"  Readout: {N_HEADS} heads x {D_PROJ}d, d_latent={D_LATENT}")
+    print(f"  Readout: {N_HEADS} heads x {D_PROJ}d + axis_feats={USE_AXIS_FEATS}"
+          f"(n_axes={N_AXES}), d_latent={D_LATENT}")
+    print(f"  Physics feats: {N_PHYS_FEATS} -> conditioning dim D_AUG={D_AUG}")
+    print(f"  Energy: {'log-space' if LOG_ENERGY else 'linear keV'}")
     print(f"  NSF: {NUM_TRANSFORMS} transforms, hidden={NSF_HIDDEN}")
 
     embedding_net = EGNNEmbedding(
@@ -698,12 +705,22 @@ def main():
         d_latent=D_LATENT,
         use_gvp=True,
         v_dim=V_DIM,
+        use_axis_feats=USE_AXIS_FEATS,
+        n_axes=N_AXES,
     )
 
-    flow, cached_embedding = build_flow(embedding_net, n_max, K_NEIGHBORS, D_LATENT, device)
+    # Wrap with the physics-augmented conditioning (used in BOTH stages).
+    aug_embedding = PhysicsAugmentedEmbedding(
+        embedding_net, n_max=n_max, k=K_NEIGHBORS, n_phys=N_PHYS_FEATS,
+        phys_mean=phys_mean.to(device), phys_std=phys_std.to(device),
+        log_energy=LOG_ENERGY,
+    ).to(device)
 
-    dir_head = DirectionHead(d_latent=D_LATENT).to(device)
-    energy_head = EnergyHead(d_latent=D_LATENT).to(device)
+    flow = build_flow(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
+    cached_embedding = aug_embedding  # aux heads read aug_embedding.last_z
+
+    dir_head = DirectionHead(d_latent=D_AUG).to(device)
+    energy_head = EnergyHead(d_latent=D_AUG, log_energy=LOG_ENERGY).to(device)
 
     # Count parameters
     n_params_egnn = sum(p.numel() for p in embedding_net.parameters())
@@ -875,46 +892,41 @@ def main():
         print(f"{'='*60}")
 
     # ================================================================
-    # STAGE 2: Scalar-Augmented Flow Fine-Tuning  (POOL A ONLY)
+    # STAGE 2: Flow-Only Fine-Tuning  (POOL A ONLY)
     # ================================================================
-    # The flow is retrained on the Pool A subset alone (uniform-on-S^2
-    # configs) so the posterior's implicit prior matches the prior we
-    # report in the paper. Pool B's channeling-enriched configs would
-    # bias the flow's implicit prior away from uniform-on-S^2.
+    # The backbone (incl. physics-augmented conditioning) is frozen and a fresh
+    # NSF flow is retrained on the Pool A subset alone (uniform-on-S^2 configs)
+    # so the posterior's implicit prior matches the prior we report in the paper.
+    # Pool B's channeling-enriched configs would bias that implicit prior away
+    # from uniform-on-S^2. (The physics features are already present from Stage 1,
+    # so this stage is purely the prior-restriction refit.)
     # ================================================================
     print(f"\n{'='*60}")
-    print(f"  STAGE 2: Scalar-Augmented Flow Fine-Tuning ({STAGE2_EPOCHS} epochs)")
-    print(f"  Backbone frozen. Flow + aux heads rebuilt with D_AUG={D_AUG}.")
+    print(f"  STAGE 2: Flow-Only Fine-Tuning ({STAGE2_EPOCHS} epochs)")
+    print(f"  Backbone frozen. Fresh flow with conditioning dim D_AUG={D_AUG}.")
     print(f"  Training set: Pool A only ({len(train_loader_poolA.dataset):,} tracks)")
     print(f"{'='*60}")
 
-    # Load best Stage 1 backbone weights (if not already loaded via --stage2-only)
+    # Load best Stage 1 weights (if not already loaded via --stage2-only)
     if not args.stage2_only:
         best_ckpt = torch.load(BEST_CKPT_FILE, map_location=device, weights_only=False)
-        flow.load_state_dict(best_ckpt['flow_state_dict'])   # restores backbone
+        flow.load_state_dict(best_ckpt['flow_state_dict'])   # restores backbone + phys buffers
         print(f"  Loaded best stage 1 checkpoint (val_loss={best_val_loss:.4f})")
         del best_ckpt
 
-    # Freeze backbone
-    for param in cached_embedding.embedding.parameters():
+    # Freeze the backbone (the EGNN base inside the physics-augmented embedding)
+    for param in aug_embedding.base.parameters():
         param.requires_grad = False
-    print(f"  Backbone frozen ({sum(p.numel() for p in cached_embedding.embedding.parameters()):,} params)")
+    print(f"  Backbone frozen "
+          f"({sum(p.numel() for p in aug_embedding.base.parameters()):,} params)")
 
-    # Wrap frozen backbone with scalar feature augmentation
-    aug_embedding = ScalarAugmentedEmbedding(
-        cached_embedding, n_max=n_max,
-        scalar_mean=scalar_mean.to(device),
-        scalar_std=scalar_std.to(device),
-    )
-
-    # Build new flow conditioned on z_aug (D_AUG = D_LATENT + N_SCALAR_FEATS)
-    # Coupling layers start from random; backbone is frozen inside aug_embedding.
+    # Build a fresh NSF flow on the SAME (now frozen) physics-augmented embedding.
     print(f"  Building new NSF flow with conditioning dim {D_AUG}...")
-    flow_s2 = build_flow_from_embedding(aug_embedding, n_max, K_NEIGHBORS, D_AUG, device)
+    flow_s2 = build_flow(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
 
     # Fresh aux heads sized for D_AUG
     dir_head_s2    = DirectionHead(d_latent=D_AUG).to(device)
-    energy_head_s2 = EnergyHead(d_latent=D_AUG).to(device)
+    energy_head_s2 = EnergyHead(d_latent=D_AUG, log_energy=LOG_ENERGY).to(device)
 
     # Trainable params: new flow coupling layers + new aux heads (backbone excluded)
     s2_params = ([p for p in flow_s2.parameters() if p.requires_grad]
@@ -947,6 +959,14 @@ def main():
         for theta_batch, x_batch in train_loader_poolA:
             theta_batch = theta_batch.to(device)
             x_batch     = x_batch.to(device)
+
+            # Oh augmentation here too: Pool A is sampled on the UPPER hemisphere
+            # only, and the 24 improper Oh elements map it onto the lower
+            # hemisphere. This makes the stage-2 flow's implicit prior genuinely
+            # uniform-on-S^2 (the prior reported in the paper) and gives the flow
+            # full-sphere coverage. Energy (col 0) and the Oh-invariant physics
+            # block are untouched.
+            x_batch, theta_batch = apply_oh_augmentation(x_batch, theta_batch, n_max)
 
             optimizer_s2.zero_grad()
 
@@ -1020,9 +1040,10 @@ def main():
                 'val_metrics': {'flow': val_flow, 'energy': val_e},
                 'best_val_loss': best_val_loss_s2,
                 'flow_module':   flow_s2,          # full object for posterior building
-                'scalar_mean':   scalar_mean,
-                'scalar_std':    scalar_std,
-                'n_scalar_feats': N_SCALAR_FEATS,
+                'phys_mean':     phys_mean,
+                'phys_std':      phys_std,
+                'n_phys_feats':  N_PHYS_FEATS,
+                'log_energy':    LOG_ENERGY,
             }, BEST_S2_CKPT_FILE)
             print(f"  [SAVE] New best S2 → {BEST_S2_CKPT_FILE.name} (val_flow={val_flow:.4f})")
         else:
@@ -1070,10 +1091,16 @@ def main():
             from sbi.inference import NPE as SNPE
         from sbi.utils import BoxUniform
 
-        # Use BoxUniform for posterior (SBI needs it for sampling)
+        # Use BoxUniform for posterior (SBI needs it for sampling).
+        # Energy bounds are in the SAME space the flow models (log keV if
+        # LOG_ENERGY), with a little margin; directions in [-1, 1].
+        if LOG_ENERGY:
+            e_lo, e_hi = math.log(0.5), math.log(120.0)
+        else:
+            e_lo, e_hi = 0.0, 105.0
         prior = BoxUniform(
-            low=torch.tensor([0.0, -1.0, -1.0, -1.0]),
-            high=torch.tensor([105.0, 1.0, 1.0, 1.0])
+            low=torch.tensor([e_lo, -1.0, -1.0, -1.0]),
+            high=torch.tensor([e_hi, 1.0, 1.0, 1.0])
         )
         inference = SNPE(prior=prior, device='cpu')
         posterior = inference.build_posterior(best_flow, sample_with="direct")
@@ -1098,10 +1125,14 @@ def main():
             eval_device = 'cuda' if torch.cuda.is_available() else 'cpu'
             evaluator = ContinuousEvaluator3D(posterior, device=eval_device)
 
-            # More samples = better calibration analysis
+            # More samples = better calibration analysis. For the final (non-smoke)
+            # run we also enable group test-time augmentation (Oh-symmetrize the
+            # posterior) for the best, exactly-symmetric numbers.
             n_eval_samples = 50 if args.smoke else 200
+            use_tta = (not args.smoke)
             t_eval_start = time()
-            df_eval = evaluator.run_eval(EVAL_CSV, num_samples=n_eval_samples)
+            df_eval = evaluator.run_eval(EVAL_CSV, num_samples=n_eval_samples,
+                                         tta_group=use_tta, n_tta=8)
             t_eval_end = time()
 
             # Inference timing report
@@ -1124,8 +1155,9 @@ def main():
                     emb_net = flow_net.embedding_net
                     k_nb = emb_net.k
                     n_max_m = emb_net.n_max
-                    x_test, _, _, n_max_t, knn_test = preprocess_egnn(
-                        EVAL_CSV, k_neighbors=k_nb
+                    n_phys_m = getattr(emb_net, 'n_phys', 0)
+                    x_test, _, _, n_max_t, knn_test, phys_test = preprocess_egnn(
+                        EVAL_CSV, k_neighbors=k_nb, return_phys=True
                     )
                     if n_max_t < n_max_m:
                         pad = n_max_m - n_max_t
@@ -1135,11 +1167,14 @@ def main():
                                        dtype=knn_test.dtype)], dim=1)
                         n_max_t = n_max_m
                     n_t = x_test.shape[0]
-                    x_flat = torch.empty(n_t, n_max_t * (3 + k_nb), dtype=torch.float32)
+                    x_flat = torch.empty(n_t, n_max_t * (3 + k_nb) + n_phys_m, dtype=torch.float32)
                     x_flat[:, :n_max_t * 3] = x_test.view(n_t, -1)
+                    knn_end = n_max_t * (3 + k_nb)
                     for s in range(0, n_t, 10000):
                         e = min(s + 10000, n_t)
-                        x_flat[s:e, n_max_t * 3:] = knn_test[s:e].float().reshape(e - s, -1)
+                        x_flat[s:e, n_max_t * 3:knn_end] = knn_test[s:e].float().reshape(e - s, -1)
+                    if n_phys_m:
+                        x_flat[:, knn_end:] = phys_test
 
                     single_obs = x_flat[:1].to(eval_device)
                     # Warmup
@@ -1162,7 +1197,7 @@ def main():
                     bench_ms = (t_bench_end - t_bench_start) / n_bench * 1000
                     print(f"    Single track ({n_eval_samples} samples): {bench_ms:.2f} ms")
                     print(f"    Single track (1 sample):   {bench_ms / n_eval_samples:.2f} ms")
-                    del x_test, knn_test, x_flat, single_obs
+                    del x_test, knn_test, phys_test, x_flat, single_obs
                 except Exception as e:
                     print(f"    Benchmark failed: {e}")
 
@@ -1203,10 +1238,18 @@ def main():
                 emb_net = posterior.posterior_estimator.embedding_net
                 k_neighbors = emb_net.k
                 n_max_model = emb_net.n_max
+                n_phys_model = getattr(emb_net, 'n_phys', 0)
+                log_energy_model = getattr(emb_net, 'log_energy', False)
 
-                x_padded, mask, theta_eval, n_max_eval, knn_idx = preprocess_egnn(
-                    EVAL_CSV, k_neighbors=k_neighbors
+                x_padded, mask, theta_eval, n_max_eval, knn_idx, phys_eval = preprocess_egnn(
+                    EVAL_CSV, k_neighbors=k_neighbors, return_phys=True
                 )
+
+                # SBC/TARP rank the TRUE theta against posterior samples, which are
+                # in the flow's space — so transform the energy axis to match.
+                if log_energy_model:
+                    theta_eval = theta_eval.clone()
+                    theta_eval[:, 0] = torch.log(theta_eval[:, 0].clamp(min=1e-3))
 
                 # Pad to match model n_max if needed
                 if n_max_eval < n_max_model:
@@ -1219,17 +1262,20 @@ def main():
                                    dtype=knn_idx.dtype)], dim=1)
                     n_max_eval = n_max_model
 
-                # Flatten same as training
+                # Flatten same as training: coords + knn + phys
                 n_ev = x_padded.shape[0]
-                x_eval_flat = torch.empty(n_ev, n_max_eval * (3 + k_neighbors),
+                x_eval_flat = torch.empty(n_ev, n_max_eval * (3 + k_neighbors) + n_phys_model,
                                           dtype=torch.float32)
                 x_eval_flat[:, :n_max_eval * 3] = x_padded.view(n_ev, -1)
+                knn_end = n_max_eval * (3 + k_neighbors)
                 CHUNK = 10000
                 for s in range(0, n_ev, CHUNK):
                     e = min(s + CHUNK, n_ev)
-                    x_eval_flat[s:e, n_max_eval * 3:] = \
+                    x_eval_flat[s:e, n_max_eval * 3:knn_end] = \
                         knn_idx[s:e].float().reshape(e - s, -1)
-                del x_padded, mask, knn_idx
+                if n_phys_model:
+                    x_eval_flat[:, knn_end:] = phys_eval
+                del x_padded, mask, knn_idx, phys_eval
 
                 # Use subset for diagnostics (SBC/TARP are expensive)
                 n_diag = min(500, n_ev) if not args.smoke else min(100, n_ev)
