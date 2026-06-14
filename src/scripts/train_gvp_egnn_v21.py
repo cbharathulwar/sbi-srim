@@ -72,7 +72,20 @@ BASE_DIR      = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), '..
 DATA_DIR      = BASE_DIR / "data/siimpl"
 TRAIN_CSV     = DATA_DIR / "siimpl_train.csv"
 EVAL_CSV      = DATA_DIR / "siimpl_eval.csv"
-RESULTS_DIR   = BASE_DIR / "results/gvp_egnn_v21_siimpl"
+
+# RESULTS_DIR resolution — CRITICAL for crash-safety on Colab.
+# On Colab the local disk is ephemeral (wiped on every runtime disconnect), so we
+# write checkpoints DIRECTLY to Google Drive when it's mounted. Then every
+# best-checkpoint save persists immediately and `--resume` finds it automatically
+# after a disconnect — no manual copy, no lost training. Override with the
+# RESULTS_DIR env var; falls back to the local repo when Drive isn't present.
+_DRIVE_RESULTS = Path("/content/drive/MyDrive/sbi-srim-results/gvp_egnn_v21_siimpl")
+if os.environ.get("RESULTS_DIR"):
+    RESULTS_DIR = Path(os.environ["RESULTS_DIR"])
+elif _DRIVE_RESULTS.parent.exists():          # Colab with Drive mounted
+    RESULTS_DIR = _DRIVE_RESULTS
+else:
+    RESULTS_DIR = BASE_DIR / "results/gvp_egnn_v21_siimpl"
 
 # Pool A spans ion_number < POOL_B_ION_START; Pool B is the channeling-fill
 # subset. Stage 2 (flow-only) is trained on Pool A only so the posterior's
@@ -143,6 +156,13 @@ STAGE2_LR_MIN    = 1e-6
 STAGE2_WARMUP    = 3
 STAGE2_PATIENCE  = 20
 STAGE2_GRAD_CLIP = 0.5
+
+# Exponential moving average of weights (Polyak averaging). The averaged weights
+# generalize / calibrate better; we VALIDATE and CHECKPOINT on them, so the saved
+# best checkpoints (and the deployed posterior) use EMA weights, while training
+# continues with the raw weights. Set USE_EMA=False to disable instantly.
+USE_EMA    = True
+EMA_DECAY  = 0.999
 
 # Per-sample loss clamp: prevents outlier samples from destabilizing training
 LOSS_CLAMP     = 1000.0   # clamp per-sample NLL before averaging
@@ -436,9 +456,83 @@ def prepare_data(args, batch_size=BATCH_SIZE):
     return train_loader, val_loader, train_loader_poolA, n_max, phys_mean, phys_std
 
 
+class EMA:
+    """Exponential moving average of model parameters (Polyak averaging).
+
+    Tracks only requires_grad params, so a frozen backbone (Stage 2) is left
+    untouched. swap_in/swap_out temporarily load the averaged weights into the
+    live model (for EMA validation/saving) and restore the training weights.
+    """
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.shadow = {n: p.detach().clone()
+                       for n, p in model.named_parameters() if p.requires_grad}
+
+    @torch.no_grad()
+    def update(self, model):
+        d = self.decay
+        for n, p in model.named_parameters():
+            s = self.shadow.get(n)
+            if s is not None:
+                s.mul_(d).add_(p.detach(), alpha=1.0 - d)
+
+    @torch.no_grad()
+    def swap_in(self, model):
+        """Load shadow weights into the model; return a backup of the live ones."""
+        backup = {}
+        for n, p in model.named_parameters():
+            s = self.shadow.get(n)
+            if s is not None:
+                backup[n] = p.detach().clone()
+                p.data.copy_(s)
+        return backup
+
+    @torch.no_grad()
+    def swap_out(self, model, backup):
+        for n, p in model.named_parameters():
+            if n in backup:
+                p.data.copy_(backup[n])
+
+    def state_dict(self):
+        return self.shadow
+
+    def load_state_dict(self, sd):
+        self.shadow = {n: t.detach().clone() for n, t in sd.items()}
+
+
+def validate_maybe_ema(flow, ema, cached_embedding, dir_head, energy_head,
+                       val_loader, device, epoch, max_epochs):
+    """Run validation on EMA weights if ema is set, else on the live weights."""
+    if ema is None:
+        return validate(flow, cached_embedding, dir_head, energy_head,
+                        val_loader, device, epoch, max_epochs)
+    backup = ema.swap_in(flow)
+    try:
+        return validate(flow, cached_embedding, dir_head, energy_head,
+                        val_loader, device, epoch, max_epochs)
+    finally:
+        ema.swap_out(flow, backup)
+
+
+def save_best_maybe_ema(flow, ema, cached_embedding, dir_head, energy_head,
+                        optimizer, epoch, val_metrics, best_val_loss, path):
+    """Save a best-checkpoint whose flow weights are the EMA-averaged weights
+    (the model we deploy). Raw training weights are restored afterward."""
+    if ema is None:
+        save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                        optimizer, epoch, val_metrics, best_val_loss, path)
+        return
+    backup = ema.swap_in(flow)
+    try:
+        save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                        optimizer, epoch, val_metrics, best_val_loss, path)
+    finally:
+        ema.swap_out(flow, backup)
+
+
 def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
                     optimizer, train_loader, device, epoch, max_epochs,
-                    n_max=None, augment=True):
+                    n_max=None, augment=True, ema=None):
     """Train for one epoch with combined loss."""
     flow.train()
     dir_head.train()
@@ -525,6 +619,8 @@ def train_one_epoch(flow, cached_embedding, dir_head, energy_head,
             max_norm=GRAD_CLIP
         )
         optimizer.step()
+        if ema is not None:
+            ema.update(flow)
 
         total_loss_sum += total_loss.item()
         flow_loss_sum += flow_loss.item()
@@ -616,9 +712,11 @@ def validate(flow, cached_embedding, dir_head, energy_head,
 
 
 def save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                    optimizer, epoch, val_metrics, best_val_loss, path):
-    """Save full training state for resuming."""
-    torch.save({
+                    optimizer, epoch, val_metrics, best_val_loss, path,
+                    ema_state=None):
+    """Save full training state for resuming. When ema_state is given (periodic
+    checkpoint), it carries the EMA shadow so --resume continues averaging."""
+    ckpt = {
         'epoch': epoch,
         'flow_state_dict': flow.state_dict(),
         'dir_head_state_dict': dir_head.state_dict(),
@@ -628,7 +726,10 @@ def save_checkpoint(flow, cached_embedding, dir_head, energy_head,
         'best_val_loss': best_val_loss,
         # Save the full flow for SBI posterior reconstruction
         'flow_module': flow,
-    }, path)
+    }
+    if ema_state is not None:
+        ckpt['ema_state'] = ema_state
+    torch.save(ckpt, path)
 
 
 def main():
@@ -662,6 +763,24 @@ def main():
 
     # Setup
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Verify the results dir is actually writable and persistent BEFORE training.
+    # On Colab this should be a Drive path; warn loudly if it's ephemeral.
+    _on_drive = "/content/drive/" in str(RESULTS_DIR)
+    try:
+        _probe = RESULTS_DIR / ".write_test"
+        _probe.write_text("ok")
+        _probe.unlink()
+        _wr = "writable"
+    except Exception as _e:
+        _wr = f"NOT WRITABLE ({_e})"
+    print(f"  RESULTS_DIR: {RESULTS_DIR}  [{_wr}]")
+    if _on_drive:
+        print(f"  -> Checkpoints persist on Google Drive; safe across disconnects "
+              f"(use --resume to continue).")
+    elif Path('/content').exists():
+        print(f"  !! WARNING: on Colab but RESULTS_DIR is EPHEMERAL — a runtime "
+              f"disconnect will lose checkpoints. Mount Drive (cell 2) before "
+              f"launching, or set RESULTS_DIR to a Drive path.")
     device = get_device()
     print(f"  DEVICE: {device}")
 
@@ -745,6 +864,7 @@ def main():
     # Load best checkpoint for stage2-only mode
     start_epoch = 0
     best_val_loss = float('inf')
+    resumed_ema_state = None   # populated from checkpoint on --resume
     if args.stage2_only:
         if not BEST_CKPT_FILE.exists():
             print(f"[ERROR] --stage2-only requires {BEST_CKPT_FILE} to exist!")
@@ -767,7 +887,9 @@ def main():
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
         start_epoch = ckpt['epoch'] + 1
         best_val_loss = ckpt['best_val_loss']
-        print(f"[RESUME] Starting from epoch {start_epoch}, best_val={best_val_loss:.4f}")
+        resumed_ema_state = ckpt.get('ema_state', None)
+        print(f"[RESUME] Starting from epoch {start_epoch}, best_val={best_val_loss:.4f}"
+              f"{' (EMA shadow restored)' if resumed_ema_state is not None else ''}")
         del ckpt
 
     # 4. Stage 1 Training (skip if --stage2-only)
@@ -795,6 +917,15 @@ def main():
 
         epochs_no_improve = 0
 
+        # EMA over the flow (incl. backbone). Built after any --resume load so the
+        # shadow starts from the loaded weights; restore the saved shadow if present.
+        ema = EMA(flow, EMA_DECAY) if USE_EMA else None
+        if ema is not None and resumed_ema_state is not None:
+            ema.load_state_dict(resumed_ema_state)
+        if ema is not None:
+            print(f"  EMA enabled (decay={EMA_DECAY}); validating + checkpointing "
+                  f"on averaged weights.")
+
         for epoch in range(start_epoch, max_epochs):
             t_epoch = time()
 
@@ -803,16 +934,16 @@ def main():
             for pg in optimizer.param_groups:
                 pg['lr'] = lr
 
-            # Train
+            # Train (EMA updated each optimizer step)
             train_metrics = train_one_epoch(
                 flow, cached_embedding, dir_head, energy_head,
                 optimizer, train_loader, device, epoch, max_epochs,
-                n_max=n_max, augment=True
+                n_max=n_max, augment=True, ema=ema
             )
 
-            # Validate
-            val_metrics = validate(
-                flow, cached_embedding, dir_head, energy_head,
+            # Validate on the EMA weights (the model we deploy)
+            val_metrics = validate_maybe_ema(
+                flow, ema, cached_embedding, dir_head, energy_head,
                 val_loader, device, epoch, max_epochs
             )
 
@@ -848,32 +979,26 @@ def main():
                   f"val={val_metrics['total']:.3f} | "
                   f"lr={lr:.1e} | {epoch_sec:.0f}s", flush=True)
 
-            # Checkpointing + early stopping
+            # Checkpointing + early stopping (on EMA val; best ckpt stores EMA weights)
             val_loss = val_metrics['flow']  # posterior quality is the goal
             if math.isfinite(val_loss) and val_loss < best_val_loss:
                 best_val_loss = val_loss
                 epochs_no_improve = 0
-                save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                save_best_maybe_ema(flow, ema, cached_embedding, dir_head, energy_head,
                               optimizer, epoch, val_metrics, best_val_loss, BEST_CKPT_FILE)
                 print(f"  -> New best val_loss={best_val_loss:.4f} (saved)")
             else:
                 epochs_no_improve += 1
 
-            # Periodic checkpoint every 10 epochs
-            if (epoch + 1) % 10 == 0:
+            # Periodic checkpoint every 5 epochs (a resume point for --resume).
+            # Stores RAW training weights + the EMA shadow so resume continues both.
+            # RESULTS_DIR is on Drive when running on Colab, so this — and the
+            # best-checkpoint save above — persist immediately and survive a
+            # runtime disconnect. No separate Drive copy needed.
+            if (epoch + 1) % 5 == 0:
                 save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                              optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
-
-                # Auto-save to Google Drive if running on Colab (crash protection)
-                drive_dir = Path('/content/drive/MyDrive/sbi-srim-results/gvp_egnn')
-                if drive_dir.parent.exists():
-                    drive_dir.mkdir(parents=True, exist_ok=True)
-                    import shutil
-                    shutil.copy2(CHECKPOINT_FILE, drive_dir / 'checkpoint.pt')
-                    if BEST_CKPT_FILE.exists():
-                        shutil.copy2(BEST_CKPT_FILE, drive_dir / 'best_checkpoint.pt')
-                    shutil.copy2(TRAIN_LOG, drive_dir / 'training_log.csv')
-                    print(f"  [DRIVE] Checkpoints + log saved to Google Drive")
+                              optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE,
+                              ema_state=(ema.state_dict() if ema is not None else None))
 
             # Early stopping
             if epochs_no_improve >= PATIENCE:
@@ -944,6 +1069,11 @@ def main():
     epochs_no_improve_s2 = 0
     t_s2_start = time()
 
+    # EMA over the Stage-2 flow (only its trainable coupling layers; the frozen
+    # backbone is excluded automatically). The deployed posterior comes from this
+    # stage, so EMA here directly improves the reported model.
+    ema_s2 = EMA(flow_s2, EMA_DECAY) if USE_EMA else None
+
     for s2_epoch in range(STAGE2_EPOCHS):
         ep_start = time()
 
@@ -993,6 +1123,8 @@ def main():
             total.backward()
             torch.nn.utils.clip_grad_norm_(s2_params, max_norm=STAGE2_GRAD_CLIP)
             optimizer_s2.step()
+            if ema_s2 is not None:
+                ema_s2.update(flow_s2)
 
             flow_loss_sum   += flow_loss.item()
             energy_loss_sum += e_loss.item()
@@ -1003,24 +1135,29 @@ def main():
         train_e    = energy_loss_sum / max(n_batches, 1)
         train_d    = dir_loss_sum    / max(n_batches, 1)
 
-        # ── Validate ──
+        # ── Validate (on EMA weights — the model we deploy) ──
+        _s2_bk = ema_s2.swap_in(flow_s2) if ema_s2 is not None else None
         flow_s2.eval()
         dir_head_s2.eval()
         energy_head_s2.eval()
         vf_sum = ve_sum = vd_sum = 0
         vn = 0
-        with torch.no_grad():
-            for theta_batch, x_batch in val_loader:
-                theta_batch = theta_batch.to(device)
-                x_batch     = x_batch.to(device)
-                vfl = flow_s2.loss(theta_batch, condition=x_batch).clamp(max=LOSS_CLAMP).mean()
-                z_aug = aug_embedding.last_z
-                ep, ls = energy_head_s2(z_aug)
-                vel = gaussian_nll(ep, ls, theta_batch[:, 0]).clamp(max=LOSS_CLAMP).mean()
-                mh, kp = dir_head_s2(z_aug)
-                vdl = axis_aware_vmf_nll(mh, kp, theta_batch[:, 1:4]).clamp(max=LOSS_CLAMP).mean()
-                if torch.isfinite(vfl + vel + vdl):
-                    vf_sum += vfl.item(); ve_sum += vel.item(); vd_sum += vdl.item(); vn += 1
+        try:
+            with torch.no_grad():
+                for theta_batch, x_batch in val_loader:
+                    theta_batch = theta_batch.to(device)
+                    x_batch     = x_batch.to(device)
+                    vfl = flow_s2.loss(theta_batch, condition=x_batch).clamp(max=LOSS_CLAMP).mean()
+                    z_aug = aug_embedding.last_z
+                    ep, ls = energy_head_s2(z_aug)
+                    vel = gaussian_nll(ep, ls, theta_batch[:, 0]).clamp(max=LOSS_CLAMP).mean()
+                    mh, kp = dir_head_s2(z_aug)
+                    vdl = axis_aware_vmf_nll(mh, kp, theta_batch[:, 1:4]).clamp(max=LOSS_CLAMP).mean()
+                    if torch.isfinite(vfl + vel + vdl):
+                        vf_sum += vfl.item(); ve_sum += vel.item(); vd_sum += vdl.item(); vn += 1
+        finally:
+            if _s2_bk is not None:
+                ema_s2.swap_out(flow_s2, _s2_bk)
 
         val_flow = vf_sum / max(vn, 1)
         val_e    = ve_sum / max(vn, 1)
@@ -1033,21 +1170,27 @@ def main():
         if math.isfinite(val_flow) and val_flow < best_val_loss_s2:
             best_val_loss_s2 = val_flow
             epochs_no_improve_s2 = 0
-            # Save: use flow_s2 + new aux heads; store scalar stats for inference
-            torch.save({
-                'epoch': s2_epoch,
-                'flow_state_dict':        flow_s2.state_dict(),
-                'dir_head_state_dict':    dir_head_s2.state_dict(),
-                'energy_head_state_dict': energy_head_s2.state_dict(),
-                'optimizer_state_dict':   optimizer_s2.state_dict(),
-                'val_metrics': {'flow': val_flow, 'energy': val_e},
-                'best_val_loss': best_val_loss_s2,
-                'flow_module':   flow_s2,          # full object for posterior building
-                'phys_mean':     phys_mean,
-                'phys_std':      phys_std,
-                'n_phys_feats':  N_PHYS_FEATS,
-                'log_energy':    LOG_ENERGY,
-            }, BEST_S2_CKPT_FILE)
+            # Save EMA weights (swap in for the save, restore training weights after)
+            _s2_bk2 = ema_s2.swap_in(flow_s2) if ema_s2 is not None else None
+            try:
+                # Save: use flow_s2 + new aux heads; store scalar stats for inference
+                torch.save({
+                    'epoch': s2_epoch,
+                    'flow_state_dict':        flow_s2.state_dict(),
+                    'dir_head_state_dict':    dir_head_s2.state_dict(),
+                    'energy_head_state_dict': energy_head_s2.state_dict(),
+                    'optimizer_state_dict':   optimizer_s2.state_dict(),
+                    'val_metrics': {'flow': val_flow, 'energy': val_e},
+                    'best_val_loss': best_val_loss_s2,
+                    'flow_module':   flow_s2,          # full object for posterior building
+                    'phys_mean':     phys_mean,
+                    'phys_std':      phys_std,
+                    'n_phys_feats':  N_PHYS_FEATS,
+                    'log_energy':    LOG_ENERGY,
+                }, BEST_S2_CKPT_FILE)
+            finally:
+                if _s2_bk2 is not None:
+                    ema_s2.swap_out(flow_s2, _s2_bk2)
             print(f"  [SAVE] New best S2 → {BEST_S2_CKPT_FILE.name} (val_flow={val_flow:.4f})")
         else:
             epochs_no_improve_s2 += 1
