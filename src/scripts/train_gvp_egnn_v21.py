@@ -79,13 +79,13 @@ EVAL_CSV      = DATA_DIR / "siimpl_eval.csv"
 # best-checkpoint save persists immediately and `--resume` finds it automatically
 # after a disconnect — no manual copy, no lost training. Override with the
 # RESULTS_DIR env var; falls back to the local repo when Drive isn't present.
-_DRIVE_RESULTS = Path("/content/drive/MyDrive/sbi-srim-results/gvp_egnn_v21_siimpl")
+_DRIVE_RESULTS = Path("/content/drive/MyDrive/sbi-srim-results/gvp_egnn_v3_siimpl")
 if os.environ.get("RESULTS_DIR"):
     RESULTS_DIR = Path(os.environ["RESULTS_DIR"])
 elif Path("/content/drive/MyDrive").exists():   # Colab with Drive mounted
     RESULTS_DIR = _DRIVE_RESULTS               # mkdir creates the subfolders
 else:
-    RESULTS_DIR = BASE_DIR / "results/gvp_egnn_v21_siimpl"
+    RESULTS_DIR = BASE_DIR / "results/gvp_egnn_v3_siimpl"
 
 # Pool A spans ion_number < POOL_B_ION_START; Pool B is the channeling-fill
 # subset. Stage 2 (flow-only) is trained on Pool A only so the posterior's
