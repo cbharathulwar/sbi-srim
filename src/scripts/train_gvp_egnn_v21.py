@@ -82,8 +82,8 @@ EVAL_CSV      = DATA_DIR / "siimpl_eval.csv"
 _DRIVE_RESULTS = Path("/content/drive/MyDrive/sbi-srim-results/gvp_egnn_v21_siimpl")
 if os.environ.get("RESULTS_DIR"):
     RESULTS_DIR = Path(os.environ["RESULTS_DIR"])
-elif _DRIVE_RESULTS.parent.exists():          # Colab with Drive mounted
-    RESULTS_DIR = _DRIVE_RESULTS
+elif Path("/content/drive/MyDrive").exists():   # Colab with Drive mounted
+    RESULTS_DIR = _DRIVE_RESULTS               # mkdir creates the subfolders
 else:
     RESULTS_DIR = BASE_DIR / "results/gvp_egnn_v21_siimpl"
 
@@ -1008,9 +1008,18 @@ def main():
         writer.close()
         total_min = (time() - t_start) / 60
 
-        # Save final checkpoint
-        save_checkpoint(flow, cached_embedding, dir_head, energy_head,
-                      optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE)
+        # Save final checkpoint. Guard against the case where the loop body never
+        # ran (e.g. --resume on a checkpoint whose epoch is already >= max_epochs):
+        # `epoch`/`val_metrics` would be unbound. In that case Stage 1 is already
+        # complete and the existing checkpoints stand — just proceed to Stage 2.
+        if start_epoch < max_epochs:
+            save_checkpoint(flow, cached_embedding, dir_head, energy_head,
+                          optimizer, epoch, val_metrics, best_val_loss, CHECKPOINT_FILE,
+                          ema_state=(ema.state_dict() if ema is not None else None))
+        else:
+            print(f"  [RESUME] Stage 1 already complete "
+                  f"(start_epoch={start_epoch} >= max_epochs={max_epochs}); "
+                  f"skipping to Stage 2.")
 
         stage1_min = (time() - t_start) / 60
         print(f"\n{'='*60}")
@@ -1312,6 +1321,11 @@ def main():
                             torch.full((knn_test.shape[0], pad, k_nb), -1,
                                        dtype=knn_test.dtype)], dim=1)
                         n_max_t = n_max_m
+                    elif n_max_t > n_max_m:
+                        x_test = x_test[:, :n_max_m, :].contiguous()
+                        knn_test = knn_test[:, :n_max_m, :].contiguous()
+                        knn_test[knn_test >= n_max_m] = -1
+                        n_max_t = n_max_m
                     n_t = x_test.shape[0]
                     x_flat = torch.empty(n_t, n_max_t * (3 + k_nb) + n_phys_m, dtype=torch.float32)
                     x_flat[:, :n_max_t * 3] = x_test.view(n_t, -1)
@@ -1397,7 +1411,7 @@ def main():
                     theta_eval = theta_eval.clone()
                     theta_eval[:, 0] = torch.log(theta_eval[:, 0].clamp(min=1e-3))
 
-                # Pad to match model n_max if needed
+                # Match model n_max (pad if shorter, truncate if longer)
                 if n_max_eval < n_max_model:
                     pad_pts = n_max_model - n_max_eval
                     n_ev = x_padded.shape[0]
@@ -1406,6 +1420,11 @@ def main():
                     knn_idx = torch.cat([knn_idx,
                         torch.full((n_ev, pad_pts, k_neighbors), -1,
                                    dtype=knn_idx.dtype)], dim=1)
+                    n_max_eval = n_max_model
+                elif n_max_eval > n_max_model:
+                    x_padded = x_padded[:, :n_max_model, :].contiguous()
+                    knn_idx = knn_idx[:, :n_max_model, :].contiguous()
+                    knn_idx[knn_idx >= n_max_model] = -1
                     n_max_eval = n_max_model
 
                 # Flatten same as training: coords + knn + phys
