@@ -136,8 +136,13 @@ LR_MAX         = 3e-4
 LR_MIN         = 1e-5
 WEIGHT_DECAY   = 1e-4
 WARMUP_EPOCHS  = 5
-MAX_EPOCHS     = 200
-PATIENCE       = 30       # early stopping (stage 1)
+# MAX_EPOCHS is a GENEROUS BACKSTOP, not the stopping rule — early stopping
+# (PATIENCE) is the real decider. The prior 200-epoch run was still improving at
+# epoch 179, i.e. 200 was binding, so we lift the cap to 300 (and stretch the
+# cosine LR horizon to match). If the model converges earlier, PATIENCE stops it
+# and nothing is wasted. Override at launch with --max-epochs.
+MAX_EPOCHS     = 300
+PATIENCE       = 40       # early stopping (stage 1) — a bit more room for the richer model
 VAL_FRACTION   = 0.05     # 10k val tracks is plenty with 197k total
 GRAD_CLIP      = 1.0
 MAX_TRAIN_TRACKS = 320_000  # SIIMPL v2.1 train: ~250k Pool A + expanded ~30-40k Pool B + headroom
@@ -150,7 +155,7 @@ BETA_START     = 0.1      # Gaussian energy loss weight (start)  — was 0.01
 BETA_END       = 0.05     # Gaussian energy loss weight (end)    — was 0.001
 
 # Stage 2: flow-only fine-tuning
-STAGE2_EPOCHS    = 60
+STAGE2_EPOCHS    = 80     # backstop; STAGE2_PATIENCE decides (same principle as Stage 1)
 STAGE2_LR_MAX    = 5e-5
 STAGE2_LR_MIN    = 1e-6
 STAGE2_WARMUP    = 3
