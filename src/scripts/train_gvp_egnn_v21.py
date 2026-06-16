@@ -351,6 +351,8 @@ def prepare_data(args, batch_size=BATCH_SIZE):
     n_total = len(x_padded)
     if args.smoke:
         n_use = min(5000, n_total)
+    elif getattr(args, 'subset', None):
+        n_use = min(args.subset, n_total)   # ablation: fast subset
     elif n_total > MAX_TRAIN_TRACKS:
         n_use = MAX_TRAIN_TRACKS
     else:
@@ -747,12 +749,41 @@ def main():
                         help='Skip stage 1, load best checkpoint, run stage 2 + eval only')
     parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
     parser.add_argument('--max-epochs', type=int, default=None)
+    # --- Ablation flags (for attribution experiments; default = full pipeline) ---
+    parser.add_argument('--no-ema', action='store_true',
+                        help='Ablation: disable EMA weight averaging')
+    parser.add_argument('--no-axis', action='store_true',
+                        help='Ablation: disable principal-axis vector-readout features')
+    parser.add_argument('--no-stage2-aug', action='store_true',
+                        help='Ablation: skip Oh augmentation in Stage 2 (upper-hemisphere prior)')
+    parser.add_argument('--subset', type=int, default=None,
+                        help='Ablation: cap training tracks to this many (fast ablations)')
+    parser.add_argument('--tag', type=str, default=None,
+                        help='Append a tag to RESULTS_DIR so ablations write to separate folders')
     args = parser.parse_args()
 
     if args.max_epochs is None:
         args.max_epochs = 5 if args.smoke else MAX_EPOCHS
 
     max_epochs = args.max_epochs
+
+    # Apply ablation overrides (module-level so all of main() sees them)
+    global USE_EMA, USE_AXIS_FEATS, RESULTS_DIR, CHECKPOINT_FILE, BEST_CKPT_FILE
+    global BEST_S2_CKPT_FILE, TRAIN_LOG, TB_LOG_DIR
+    if args.no_ema:
+        USE_EMA = False
+    if args.no_axis:
+        USE_AXIS_FEATS = False
+    if args.tag:
+        RESULTS_DIR = RESULTS_DIR.parent / f"{RESULTS_DIR.name}_{args.tag}"
+        CHECKPOINT_FILE   = RESULTS_DIR / "checkpoint.pt"
+        BEST_CKPT_FILE    = RESULTS_DIR / "best_checkpoint.pt"
+        BEST_S2_CKPT_FILE = RESULTS_DIR / "best_checkpoint_stage2.pt"
+        TRAIN_LOG         = RESULTS_DIR / "training_log.csv"
+        TB_LOG_DIR        = RESULTS_DIR / "tb_logs"
+    if any([args.no_ema, args.no_axis, args.no_stage2_aug, args.subset, args.tag]):
+        print(f"  [ABLATION] no_ema={args.no_ema} no_axis={args.no_axis} "
+              f"no_stage2_aug={args.no_stage2_aug} subset={args.subset} tag={args.tag}")
 
     t_start = time()
     print(f"\n{'='*60}")
@@ -1112,8 +1143,10 @@ def main():
             # hemisphere. This makes the stage-2 flow's implicit prior genuinely
             # uniform-on-S^2 (the prior reported in the paper) and gives the flow
             # full-sphere coverage. Energy (col 0) and the Oh-invariant physics
-            # block are untouched.
-            x_batch, theta_batch = apply_oh_augmentation(x_batch, theta_batch, n_max)
+            # block are untouched. (--no-stage2-aug disables this for the
+            # head-tail attribution ablation.)
+            if not getattr(args, 'no_stage2_aug', False):
+                x_batch, theta_batch = apply_oh_augmentation(x_batch, theta_batch, n_max)
 
             optimizer_s2.zero_grad()
 
