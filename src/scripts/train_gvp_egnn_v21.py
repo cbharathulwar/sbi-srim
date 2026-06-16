@@ -50,6 +50,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')
 from src.utils.data_utils import preprocess_egnn
 from src.models.egnn import (EGNNEmbedding, DirectionHead, EnergyHead,
                               PhysicsAugmentedEmbedding)
+from src.models.directional_head import DirectionalPosterior
 from src.models.vmf_loss import axis_aware_vmf_nll, gaussian_nll
 
 # SBI Imports (only for building the flow architecture)
@@ -168,6 +169,13 @@ STAGE2_GRAD_CLIP = 0.5
 # continues with the raw weights. Set USE_EMA=False to disable instantly.
 USE_EMA    = True
 EMA_DECAY  = 0.999
+
+# Posterior estimator: NSF flow (default) or the native-S^2 directional head
+# (vMF mixture for direction + GMM for log-energy). The head targets the C2ST
+# calibration failure and head-tail. Toggle with --directional-head.
+USE_DIRECTIONAL_HEAD = False
+N_DIR_COMP = 4    # vMF mixture components (>=2 lets head & tail be separate modes)
+N_E_COMP   = 3    # log-energy GMM components
 
 # Per-sample loss clamp: prevents outlier samples from destabilizing training
 LOSS_CLAMP     = 1000.0   # clamp per-sample NLL before averaging
@@ -301,6 +309,16 @@ def build_flow(aug_embedding, n_max, k, n_phys, device):
     dummy_x = torch.randn(100, n_max * (3 + k) + n_phys)
     flow = build_fn(_dummy_theta(100), dummy_x)
     return flow.to(device)
+
+
+def build_estimator(aug_embedding, n_max, k, n_phys, device):
+    """Posterior estimator factory: NSF flow (default) or the native-S^2
+    directional head. Both expose .loss(theta, condition) / .sample(shape,
+    condition) and wrap the same physics-augmented embedding."""
+    if USE_DIRECTIONAL_HEAD:
+        return DirectionalPosterior(aug_embedding, d_cond=D_AUG,
+                                    n_dir_comp=N_DIR_COMP, n_e_comp=N_E_COMP).to(device)
+    return build_flow(aug_embedding, n_max, k, n_phys, device)
 
 
 def _load_ion_numbers_aligned(csv_path):
@@ -747,7 +765,8 @@ def main():
                         help='Resume from checkpoint')
     parser.add_argument('--stage2-only', action='store_true',
                         help='Skip stage 1, load best checkpoint, run stage 2 + eval only')
-    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE)
+    parser.add_argument('--batch-size', type=int, default=None,
+                        help='Explicit batch size (overrides VRAM auto-detect)')
     parser.add_argument('--max-epochs', type=int, default=None)
     # --- Ablation flags (for attribution experiments; default = full pipeline) ---
     parser.add_argument('--no-ema', action='store_true',
@@ -758,8 +777,12 @@ def main():
                         help='Ablation: skip Oh augmentation in Stage 2 (upper-hemisphere prior)')
     parser.add_argument('--subset', type=int, default=None,
                         help='Ablation: cap training tracks to this many (fast ablations)')
+    parser.add_argument('--stage2-epochs', type=int, default=None,
+                        help='Ablation: override Stage 2 epoch cap (default 80)')
     parser.add_argument('--tag', type=str, default=None,
                         help='Append a tag to RESULTS_DIR so ablations write to separate folders')
+    parser.add_argument('--directional-head', action='store_true',
+                        help='Use the native-S^2 directional posterior head instead of the NSF flow')
     args = parser.parse_args()
 
     if args.max_epochs is None:
@@ -769,11 +792,16 @@ def main():
 
     # Apply ablation overrides (module-level so all of main() sees them)
     global USE_EMA, USE_AXIS_FEATS, RESULTS_DIR, CHECKPOINT_FILE, BEST_CKPT_FILE
-    global BEST_S2_CKPT_FILE, TRAIN_LOG, TB_LOG_DIR
+    global BEST_S2_CKPT_FILE, TRAIN_LOG, TB_LOG_DIR, STAGE2_EPOCHS, USE_DIRECTIONAL_HEAD
     if args.no_ema:
         USE_EMA = False
     if args.no_axis:
         USE_AXIS_FEATS = False
+    if args.stage2_epochs is not None:
+        STAGE2_EPOCHS = args.stage2_epochs
+    if args.directional_head:
+        USE_DIRECTIONAL_HEAD = True
+        print("  [HEAD] Using native-S^2 directional posterior head (vMF mixture + GMM energy)")
     if args.tag:
         RESULTS_DIR = RESULTS_DIR.parent / f"{RESULTS_DIR.name}_{args.tag}"
         CHECKPOINT_FILE   = RESULTS_DIR / "checkpoint.pt"
@@ -820,22 +848,27 @@ def main():
     device = get_device()
     print(f"  DEVICE: {device}")
 
-    # Auto-detect batch size based on GPU VRAM
-    # GVP layers use more memory per edge than vanilla EGNN
-    batch_size = args.batch_size
+    # Batch size: explicit --batch-size wins; otherwise auto-detect from VRAM.
+    batch_size = args.batch_size if args.batch_size is not None else BATCH_SIZE
     if device == "cuda":
         vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
         gpu_name = torch.cuda.get_device_name()
         print(f"  GPU: {gpu_name}")
         print(f"  VRAM: {vram_gb:.1f} GB")
 
-        # Auto-adjust batch size if user didn't override
-        if args.batch_size == BATCH_SIZE:  # user didn't explicitly set it
-            if vram_gb < 20:       # T4 (15GB) or similar
-                batch_size = 32
-            elif vram_gb < 45:     # A100-40GB
+        if args.batch_size is not None:
+            print(f"  Batch size (explicit): {batch_size}")
+        else:
+            # Auto-adjust only when not explicitly set. NOTE: the 11GB tier
+            # (2080 Ti) fits batch 256 for this model (~8GB peak) — don't drop
+            # to 32 just on the <20GB rule.
+            if vram_gb < 10:
+                batch_size = 64
+            elif vram_gb < 20:     # 2080 Ti (11GB) / similar — 256 verified to fit
+                batch_size = 256
+            elif vram_gb < 45:
                 batch_size = 128
-            else:                   # A100-80GB
+            else:
                 batch_size = 256
             print(f"  Auto batch size: {batch_size} (based on {vram_gb:.0f}GB VRAM)")
 
@@ -874,7 +907,7 @@ def main():
         log_energy=LOG_ENERGY,
     ).to(device)
 
-    flow = build_flow(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
+    flow = build_estimator(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
     cached_embedding = aug_embedding  # aux heads read aug_embedding.last_z
 
     dir_head = DirectionHead(d_latent=D_AUG).to(device)
@@ -1095,7 +1128,7 @@ def main():
 
     # Build a fresh NSF flow on the SAME (now frozen) physics-augmented embedding.
     print(f"  Building new NSF flow with conditioning dim {D_AUG}...")
-    flow_s2 = build_flow(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
+    flow_s2 = build_estimator(aug_embedding, n_max, K_NEIGHBORS, N_PHYS_FEATS, device)
 
     # Fresh aux heads sized for D_AUG
     dir_head_s2    = DirectionHead(d_latent=D_AUG).to(device)
@@ -1277,30 +1310,41 @@ def main():
                                weights_only=False)
         best_flow = best_ckpt['flow_module']
 
-        # SNPE renamed to NPE in newer sbi; alias for backward compatibility.
-        try:
-            from sbi.inference import SNPE
-        except ImportError:
-            from sbi.inference import NPE as SNPE
-        from sbi.utils import BoxUniform
-
-        # Use BoxUniform for posterior (SBI needs it for sampling).
-        # Energy bounds are in the SAME space the flow models (log keV if
-        # LOG_ENERGY), with a little margin; directions in [-1, 1].
-        if LOG_ENERGY:
-            e_lo, e_hi = math.log(0.5), math.log(120.0)
+        if USE_DIRECTIONAL_HEAD:
+            # The directional head is not an sbi flow, so sbi's build_posterior
+            # can't wrap it. Use a minimal shim exposing .posterior_estimator —
+            # that's all ContinuousEvaluator3D needs (.embedding_net + .sample).
+            class _DirectShim:
+                def __init__(self, est):
+                    self.posterior_estimator = est
+            posterior = _DirectShim(best_flow.to('cpu'))
+            torch.save(best_flow, RESULTS_DIR / "directional_posterior.pt")
+            print("[SAVE] Directional-head posterior (direct shim) -> directional_posterior.pt")
         else:
-            e_lo, e_hi = 0.0, 105.0
-        prior = BoxUniform(
-            low=torch.tensor([e_lo, -1.0, -1.0, -1.0]),
-            high=torch.tensor([e_hi, 1.0, 1.0, 1.0])
-        )
-        inference = SNPE(prior=prior, device='cpu')
-        posterior = inference.build_posterior(best_flow, sample_with="direct")
+            # SNPE renamed to NPE in newer sbi; alias for backward compatibility.
+            try:
+                from sbi.inference import SNPE
+            except ImportError:
+                from sbi.inference import NPE as SNPE
+            from sbi.utils import BoxUniform
 
-        posterior_path = RESULTS_DIR / "gvp_egnn_posterior.pt"
-        torch.save(posterior, posterior_path)
-        print(f"[SAVE] Posterior saved -> {posterior_path}")
+            # Use BoxUniform for posterior (SBI needs it for sampling).
+            # Energy bounds are in the SAME space the flow models (log keV if
+            # LOG_ENERGY), with a little margin; directions in [-1, 1].
+            if LOG_ENERGY:
+                e_lo, e_hi = math.log(0.5), math.log(120.0)
+            else:
+                e_lo, e_hi = 0.0, 105.0
+            prior = BoxUniform(
+                low=torch.tensor([e_lo, -1.0, -1.0, -1.0]),
+                high=torch.tensor([e_hi, 1.0, 1.0, 1.0])
+            )
+            inference = SNPE(prior=prior, device='cpu')
+            posterior = inference.build_posterior(best_flow, sample_with="direct")
+
+            posterior_path = RESULTS_DIR / "gvp_egnn_posterior.pt"
+            torch.save(posterior, posterior_path)
+            print(f"[SAVE] Posterior saved -> {posterior_path}")
     except Exception as e:
         print(f"[WARN] Could not build posterior: {e}")
         import traceback
@@ -1426,7 +1470,13 @@ def main():
             # (using SBI's built-in tools — the rigorous way)
             # =============================================================
             print("\n[STEP 6] Running SBI Posterior Diagnostics (SBC + TARP)...")
+            if USE_DIRECTIONAL_HEAD:
+                print("  [SKIP] sbi SBC/TARP not applicable to the directional head "
+                      "(not an sbi flow). Use the ContinuousEvaluator3D calibration "
+                      "curves + the coverage/C2ST analysis on eval_results.csv instead.")
             try:
+                if USE_DIRECTIONAL_HEAD:
+                    raise ImportError("directional head: skipping sbi SBC/TARP")
                 from sbi.diagnostics import run_sbc, check_sbc, run_tarp, check_tarp
                 from sbi.analysis import sbc_rank_plot, plot_tarp
                 import matplotlib.pyplot as plt
