@@ -1306,7 +1306,10 @@ def main():
     print(f"\n[STEP 4] Building SBI posterior from {posterior_ckpt_file.name}...")
     posterior = None
     try:
-        best_ckpt = torch.load(posterior_ckpt_file, map_location='cpu',
+        # Build/eval the posterior on the GPU when available — CPU eval of 50k
+        # tracks x 200 samples x TTA is hours; GPU is minutes.
+        pdev = 'cuda' if torch.cuda.is_available() else 'cpu'
+        best_ckpt = torch.load(posterior_ckpt_file, map_location=pdev,
                                weights_only=False)
         best_flow = best_ckpt['flow_module']
 
@@ -1317,7 +1320,7 @@ def main():
             class _DirectShim:
                 def __init__(self, est):
                     self.posterior_estimator = est
-            posterior = _DirectShim(best_flow.to('cpu'))
+            posterior = _DirectShim(best_flow.to(pdev))
             torch.save(best_flow, RESULTS_DIR / "directional_posterior.pt")
             print("[SAVE] Directional-head posterior (direct shim) -> directional_posterior.pt")
         else:
@@ -1336,11 +1339,11 @@ def main():
             else:
                 e_lo, e_hi = 0.0, 105.0
             prior = BoxUniform(
-                low=torch.tensor([e_lo, -1.0, -1.0, -1.0]),
-                high=torch.tensor([e_hi, 1.0, 1.0, 1.0])
+                low=torch.tensor([e_lo, -1.0, -1.0, -1.0], device=pdev),
+                high=torch.tensor([e_hi, 1.0, 1.0, 1.0], device=pdev)
             )
-            inference = SNPE(prior=prior, device='cpu')
-            posterior = inference.build_posterior(best_flow, sample_with="direct")
+            inference = SNPE(prior=prior, device=pdev)
+            posterior = inference.build_posterior(best_flow.to(pdev), sample_with="direct")
 
             posterior_path = RESULTS_DIR / "gvp_egnn_posterior.pt"
             torch.save(posterior, posterior_path)
