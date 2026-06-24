@@ -149,7 +149,7 @@ class DirectionalPosterior(nn.Module):
             .n_phys/.log_energy (for the eval chain-walk).
         d_cond: conditioning dimension (= D_AUG).
     """
-    def __init__(self, embedding_net, d_cond, n_dir_comp=4, n_e_comp=3, hidden=128):
+    def __init__(self, embedding_net, d_cond, n_dir_comp=4, n_e_comp=3, hidden=256):
         super().__init__()
         self.embedding_net = embedding_net
         self.energy = GMM1D(d_cond, n_e_comp, hidden)

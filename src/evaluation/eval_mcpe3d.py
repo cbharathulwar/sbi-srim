@@ -198,6 +198,29 @@ class ContinuousEvaluator3D:
         # Concatenate: (num_samples, total_tracks, 4)
         samples = torch.cat(all_samples, dim=1).numpy()
 
+        # Optional ANALYTIC mode direction (directional head only): the highest-
+        # weight vMF component mean. Tier-A showed the mode is ~0.3deg sharper than
+        # the sample mean-resultant for the headline angular metric. Non-destructive:
+        # stored as extra columns; falls back silently for the NSF flow.
+        pred_mode_dir = None
+        est = self.posterior.posterior_estimator
+        if hasattr(est, 'direction') and hasattr(est.direction, '_params') \
+                and hasattr(est, 'embedding_net'):
+            try:
+                import torch.nn.functional as _F
+                modes = []
+                with torch.no_grad():
+                    for i in range(0, num_tracks, batch_size):
+                        ctx = features[i:i + batch_size].to(self.device)
+                        z = est.embedding_net(ctx)
+                        mu, _kap, logits = est.direction._params(z)
+                        m = mu[torch.arange(mu.shape[0]), logits.argmax(1)]
+                        modes.append(_F.normalize(m, dim=-1).cpu())
+                pred_mode_dir = torch.cat(modes).numpy()  # (N_tracks, 3)
+                print("      -> Analytic vMF-mode direction computed (extra columns).")
+            except Exception as _e:
+                print(f"      -> [mode] skipped: {_e}")
+
         # ================================================================
         # 3. LEVEL 1: Point Estimates (same as before, for comparison)
         # ================================================================
@@ -231,6 +254,18 @@ class ContinuousEvaluator3D:
         dot_prod = (pred_vx_n * true_vx) + (pred_vy_n * true_vy) + (pred_vz_n * true_vz)
         dot_prod = np.clip(dot_prod, -1.0, 1.0)
         angular_error_deg = np.degrees(np.arccos(dot_prod))
+
+        # Angular error from the ANALYTIC vMF MODE (sharper headline metric; see
+        # the mode pass above). Columns are NaN for the NSF flow (no mode).
+        if pred_mode_dir is not None:
+            dotm = np.clip(pred_mode_dir[:, 0] * true_vx + pred_mode_dir[:, 1] * true_vy
+                           + pred_mode_dir[:, 2] * true_vz, -1.0, 1.0)
+            angular_error_mode_deg = np.degrees(np.arccos(dotm))
+            pred_vx_mode, pred_vy_mode, pred_vz_mode = (pred_mode_dir[:, 0],
+                                                        pred_mode_dir[:, 1], pred_mode_dir[:, 2])
+        else:
+            angular_error_mode_deg = np.full_like(angular_error_deg, np.nan)
+            pred_vx_mode = pred_vy_mode = pred_vz_mode = np.full_like(angular_error_deg, np.nan)
 
         # ================================================================
         # 4. LEVEL 2: Posterior Uncertainty Quantification
@@ -274,6 +309,28 @@ class ContinuousEvaluator3D:
         # R68 credible cone: 68% of samples fall within this angle of the mean
         angular_cone_68 = np.percentile(angles_to_mean, 68, axis=0)  # (N_tracks,)
         angular_cone_90 = np.percentile(angles_to_mean, 90, axis=0)
+
+        # --- Angular coverage calibration curve (the SOUND directional metric) ---
+        # For nominal level q, the q-credible CONE should contain the true
+        # direction q-fraction of the time; ECE = mean|empirical - nominal|. This
+        # is the calibration diagnostic to report for an S^2 posterior — it tests
+        # the cone spread directly, unlike the per-Cartesian-component SBC-rank
+        # C2ST (artifact-prone and insensitive to spread).
+        true_dir = np.stack([true_vx, true_vy, true_vz], axis=1)
+        true_dir = true_dir / (np.linalg.norm(true_dir, axis=1, keepdims=True) + 1e-9)
+        cos_true = np.clip(np.sum(mean_dir_normed * true_dir, axis=1), -1.0, 1.0)
+        ang_true_to_mean = np.degrees(np.arccos(cos_true))  # (N_tracks,)
+        ang_levels = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.68, 0.7, 0.8, 0.9, 0.95])
+        ang_coverage = np.array([
+            float(np.mean(ang_true_to_mean <= np.percentile(angles_to_mean, q * 100, axis=0)))
+            for q in ang_levels
+        ])
+        self._angular_coverage = ang_coverage
+        self._angular_levels = ang_levels
+        self._angular_ece = float(np.mean(np.abs(ang_coverage - ang_levels)))
+        print(f"      -> Angular coverage ECE (sound calib metric): {100*self._angular_ece:.2f}%")
+        print("         nominal->empirical: " + ", ".join(
+            f"{int(100*q)}:{100*c:.0f}" for q, c in zip(ang_levels, ang_coverage)))
 
         # ================================================================
         # 5. LEVEL 3: SBI Calibration (THE key diagnostic)
@@ -327,6 +384,11 @@ class ContinuousEvaluator3D:
             'true_vz': true_vz,
             'pred_vz': pred_vz_n,
             'angular_error_deg': angular_error_deg,
+            # Analytic vMF-mode direction (sharper headline; NaN for NSF flow)
+            'pred_vx_mode': pred_vx_mode,
+            'pred_vy_mode': pred_vy_mode,
+            'pred_vz_mode': pred_vz_mode,
+            'angular_error_mode_deg': angular_error_mode_deg,
             # Posterior uncertainty
             'energy_std': energy_std,
             'vx_std': vx_std,

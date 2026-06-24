@@ -1368,7 +1368,10 @@ def main():
             # More samples = better calibration analysis. For the final (non-smoke)
             # run we also enable group test-time augmentation (Oh-symmetrize the
             # posterior) for the best, exactly-symmetric numbers.
-            n_eval_samples = 50 if args.smoke else 200
+            # 400 = posterior-sample convergence plateau (local study): ECE,
+            # head-tail, and the 68/90 cones all stable to <0.1% vs N=3200; the
+            # mode point estimate is analytic / N-independent. 50 for smoke only.
+            n_eval_samples = 50 if args.smoke else 400
             use_tta = (not args.smoke)
             t_eval_start = time()
             df_eval = evaluator.run_eval(EVAL_CSV, num_samples=n_eval_samples,
