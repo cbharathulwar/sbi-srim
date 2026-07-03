@@ -980,7 +980,8 @@ def load_and_pad_3d_tracks(csv_path, max_points="auto"):
 # EGNN PREPROCESSING (Pipeline C)
 # ============================================================
 
-def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8, return_phys=False):
+def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8, return_phys=False,
+                    smear_sigma=0.0):
     """
     Preprocess 3D tracks for EGNN Pipeline C.
 
@@ -1037,7 +1038,8 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8, return_phys=Fals
     csv_path = Path(csv_path)
 
     # --- Check disk cache (v3: added per-track physics descriptors) ---
-    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}_v3.egnn_cache.pt"
+    _smear_tag = f"_smear{smear_sigma:g}" if smear_sigma else ""
+    cache_path = csv_path.parent / f"{csv_path.stem}_k{k_neighbors}_mp{max_points}{_smear_tag}_v3.egnn_cache.pt"
     if cache_path.exists():
         print(f"[EGNN] Loading cached preprocessed data from {cache_path.name}")
         cached = torch.load(cache_path, weights_only=False)
@@ -1132,6 +1134,13 @@ def preprocess_egnn(csv_path, max_points="auto", k_neighbors=8, return_phys=Fals
                          total=N_tracks):
         s, e = track_starts[t_idx], track_ends[t_idx]
         points = xyz[s:e]
+
+        # 0. Optical-localization smearing (Gaussian, width smear_sigma in coord
+        #    units = Angstrom): models the finite NV-position readout precision.
+        #    Applied to the raw observed positions BEFORE centering / kNN / phys,
+        #    so the whole downstream chain sees the blurred track. Off by default.
+        if smear_sigma:
+            points = points + np.random.normal(0.0, smear_sigma, size=points.shape)
 
         # 1. Center (subtract centroid)
         centroid = points.mean(axis=0)
