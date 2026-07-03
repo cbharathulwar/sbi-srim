@@ -1,0 +1,11 @@
+# Core dependencies for training + evaluation.
+# (SIIMPL, the ion-implantation Monte-Carlo simulator, is required only for
+#  regenerating the dataset from scratch and is installed separately.)
+torch>=2.1
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+sbi>=0.22
+tensorboard>=2.14
+tqdm

@@ -1,0 +1,1016 @@
+"""
+EGNN-SBI Model: E(n)-Equivariant Graph Neural Network for SBI
+=============================================================
+Pipeline C: Replaces PointNet with an equivariant architecture that
+naturally separates scalar features (rotation-invariant -> energy)
+from vector features (rotation-equivariant -> direction).
+
+Architecture:
+  Stage 1: Preprocessing (center, PCA-align, normalize, pad, mask)
+  Stage 2: EGNN Backbone (kNN graph + stacked EGNN layers)
+  Stage 3: Dual-Channel Readout (scalar channel + vector channel + fusion)
+  Stage 4: SNPE Normalizing Flow (external, SBI library)
+
+Reference: Satorras et al., "E(n) Equivariant Graph Neural Networks" (2021)
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+# ============================================================
+# kNN Graph Builder (pure PyTorch, no torch_geometric needed)
+# ============================================================
+
+def build_knn_graph(coords, mask, k=16):
+    """
+    Build a kNN graph over real (non-padded) points only.
+    Uses chunked processing: loops over small chunks of tracks,
+    trimming each chunk to its max real length before computing cdist.
+    This avoids the massive (B, N_max, N_max) distance matrix.
+
+    Args:
+        coords: (B, N, 3) padded coordinates
+        mask:   (B, N)    boolean mask (True = real point)
+        k:      number of nearest neighbors
+
+    Returns:
+        edge_index: (2, E) COO format edges (in flat/global indexing)
+        batch_vec:  (total_real_points,) batch assignment
+        flat_coords: (total_real_points, 3) real coordinates only
+        real_counts: (B,) number of real points per track
+        padded_to_flat: (B, N) mapping from padded to flat indices
+    """
+    B, N, _ = coords.shape
+    device = coords.device
+    CHUNK_SIZE = 16  # Process 16 tracks at a time
+
+    real_counts = mask.sum(dim=1)  # (B,)
+
+    # --- Extract flat coords and build batch_vec (vectorized) ---
+    flat_coords = coords[mask]  # (total_real, 3)
+    total_real = flat_coords.shape[0]
+
+    batch_vec = mask.nonzero(as_tuple=True)[0]  # (total_real,)
+
+    # padded_to_flat mapping
+    padded_to_flat = torch.full((B, N), -1, dtype=torch.long, device=device)
+    flat_indices = torch.arange(total_real, device=device)
+    real_positions = mask.nonzero(as_tuple=False)  # (total_real, 2)
+    padded_to_flat[real_positions[:, 0], real_positions[:, 1]] = flat_indices
+
+    # Clamp k to max possible neighbors
+    k_use = min(k, (real_counts.max().item() - 1)) if real_counts.max().item() > 1 else 0
+
+    if k_use == 0 or total_real == 0:
+        edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
+        return edge_index, batch_vec, flat_coords, real_counts, padded_to_flat
+
+    # --- Chunked kNN: process CHUNK_SIZE tracks at a time ---
+    edge_parts = []
+
+    for chunk_start in range(0, B, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, B)
+        chunk_coords = coords[chunk_start:chunk_end]     # (C, N, 3)
+        chunk_mask = mask[chunk_start:chunk_end]           # (C, N)
+        chunk_counts = real_counts[chunk_start:chunk_end]  # (C,)
+
+        # Trim to max real points in this chunk (skip padding columns)
+        max_real = int(chunk_counts.max().item())
+        if max_real <= 1:
+            continue
+        chunk_coords = chunk_coords[:, :max_real]  # (C, M, 3) where M << N
+        chunk_mask = chunk_mask[:, :max_real]        # (C, M)
+
+        k_chunk = min(k_use, max_real - 1)
+        C = chunk_end - chunk_start
+
+        # Batched pairwise distances on the TRIMMED chunk
+        dists = torch.cdist(chunk_coords, chunk_coords)  # (C, M, M)
+
+        # Mask out padded points
+        pad_mask = ~chunk_mask  # (C, M)
+        dists.masked_fill_(pad_mask.unsqueeze(2), float('inf'))
+        dists.masked_fill_(pad_mask.unsqueeze(1), float('inf'))
+
+        # No self-loops
+        diag_idx = torch.arange(max_real, device=device)
+        dists[:, diag_idx, diag_idx] = float('inf')
+
+        # Topk: (C, M, k_chunk)
+        _, topk_local = dists.topk(k_chunk, dim=-1, largest=False)  # (C, M, k_chunk)
+
+        # --- Vectorized conversion to flat global indices ---
+        # Get the padded_to_flat mapping for this chunk (trimmed columns)
+        chunk_p2f = padded_to_flat[chunk_start:chunk_end, :max_real]  # (C, M)
+
+        # Build real-point mask for this chunk: which (b_local, n) are real
+        # chunk_mask is (C, M), True for real points
+        chunk_real_positions = chunk_mask.nonzero(as_tuple=False)  # (num_real_in_chunk, 2)
+        if chunk_real_positions.shape[0] == 0:
+            continue
+
+        b_local = chunk_real_positions[:, 0]  # (num_real,)
+        n_local = chunk_real_positions[:, 1]  # (num_real,)
+
+        # Source flat indices for real points in this chunk
+        src_flat = chunk_p2f[b_local, n_local]  # (num_real,)
+
+        # Gather topk neighbor indices for real points: (num_real, k_chunk)
+        topk_for_real = topk_local[b_local, n_local, :]  # (num_real, k_chunk)
+
+        # Map neighbor padded indices to flat indices
+        dst_flat = chunk_p2f[
+            b_local.unsqueeze(1).expand_as(topk_for_real),
+            topk_for_real
+        ]  # (num_real, k_chunk)
+
+        # Expand src to match: (num_real, k_chunk)
+        src_expanded = src_flat.unsqueeze(1).expand_as(dst_flat)
+
+        # Flatten
+        src_1d = src_expanded.reshape(-1)
+        dst_1d = dst_flat.reshape(-1)
+
+        # Remove invalid edges (padded neighbors mapped to -1)
+        valid = (dst_1d >= 0) & (src_1d >= 0)
+        if valid.any():
+            edge_parts.append(torch.stack([src_1d[valid], dst_1d[valid]], dim=0))
+
+    if len(edge_parts) == 0:
+        edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
+    else:
+        edge_index = torch.cat(edge_parts, dim=1)  # (2, E)
+
+    return edge_index, batch_vec, flat_coords, real_counts, padded_to_flat
+
+
+def build_edges_precomputed(coords, mask, neighbor_idx):
+    """
+    Build edge_index from PRECOMPUTED kNN neighbor indices.
+    No distance computation — just index mapping. ~100x faster than cdist.
+
+    Args:
+        coords:       (B, N, 3) padded coordinates
+        mask:         (B, N)    boolean mask (True = real point)
+        neighbor_idx: (B, N, k) precomputed kNN indices in padded space
+                      (-1 for padding / invalid neighbors)
+
+    Returns:
+        edge_index:     (2, E) COO format edges (flat/global indexing)
+        batch_vec:      (total_real,) batch assignment
+        flat_coords:    (total_real, 3) real coordinates only
+        real_counts:    (B,) number of real points per track
+        padded_to_flat: (B, N) mapping from padded to flat indices
+    """
+    B, N, _ = coords.shape
+    device = coords.device
+
+    real_counts = mask.sum(dim=1)  # (B,)
+
+    # Extract flat coords and batch_vec
+    flat_coords = coords[mask]      # (total_real, 3)
+    total_real = flat_coords.shape[0]
+    batch_vec = mask.nonzero(as_tuple=True)[0]  # (total_real,)
+
+    # padded_to_flat mapping
+    padded_to_flat = torch.full((B, N), -1, dtype=torch.long, device=device)
+    flat_indices = torch.arange(total_real, device=device)
+    real_positions = mask.nonzero(as_tuple=False)  # (total_real, 2)
+    padded_to_flat[real_positions[:, 0], real_positions[:, 1]] = flat_indices
+
+    if total_real == 0:
+        edge_index = torch.zeros(2, 0, dtype=torch.long, device=device)
+        return edge_index, batch_vec, flat_coords, real_counts, padded_to_flat
+
+    # Get (b, n) for each real point
+    b_idx = real_positions[:, 0]  # (total_real,)
+    n_idx = real_positions[:, 1]  # (total_real,)
+
+    # Gather precomputed neighbors for real points: (total_real, k)
+    k = neighbor_idx.shape[2]
+    nbr_for_real = neighbor_idx[b_idx, n_idx, :]  # (total_real, k)
+
+    # Map neighbor padded indices to flat global indices
+    # Clamp to valid range for indexing (fix -1 after)
+    nbr_clamped = nbr_for_real.clamp(min=0)
+    dst_flat = padded_to_flat[
+        b_idx.unsqueeze(1).expand_as(nbr_clamped),
+        nbr_clamped
+    ]  # (total_real, k)
+    # Restore -1 for invalid neighbors
+    dst_flat[nbr_for_real < 0] = -1
+
+    # Source: each real point repeated k times
+    src_flat = flat_indices.unsqueeze(1).expand_as(dst_flat)  # (total_real, k)
+
+    # Flatten and filter invalid
+    src_1d = src_flat.reshape(-1)
+    dst_1d = dst_flat.reshape(-1)
+    valid = dst_1d >= 0
+    edge_index = torch.stack([src_1d[valid], dst_1d[valid]], dim=0)  # (2, E)
+
+    return edge_index, batch_vec, flat_coords, real_counts, padded_to_flat
+
+
+# ============================================================
+# Single EGNN Layer
+# ============================================================
+
+class EGNNLayer(nn.Module):
+    """
+    One layer of the E(n)-Equivariant Graph Neural Network.
+
+    Updates two streams simultaneously:
+      - h (scalar features): rotation-invariant, with residual connection
+      - x (positions):       rotation-equivariant, NO residual
+    """
+
+    def __init__(self, hidden_dim):
+        super().__init__()
+        d_h = hidden_dim
+
+        # Edge MLP: phi_e([h_i, h_j, d_ij]) -> message
+        self.phi_e = nn.Sequential(
+            nn.Linear(2 * d_h + 1, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # Coord MLP: phi_x(message) -> scalar weight for position update
+        self.phi_x = nn.Sequential(
+            nn.Linear(d_h, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, 1),
+        )
+
+        # Node MLP: phi_h([h_i, aggregated_messages]) -> updated features
+        self.phi_h = nn.Sequential(
+            nn.Linear(2 * d_h, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # LayerNorm after residual connection (stabilizes gradient flow)
+        self.layer_norm = nn.LayerNorm(d_h)
+
+    def forward(self, h, x, edge_index):
+        """
+        Args:
+            h: (N, d_h) scalar node features
+            x: (N, 3)   node positions
+            edge_index: (2, E) graph edges [sources, destinations]
+
+        Returns:
+            h_new: (N, d_h) updated scalar features (with residual)
+            x_new: (N, 3)   updated positions (no residual)
+        """
+        src, dst = edge_index  # src -> dst edges
+
+        # 1. Compute edge messages
+        d_ij = (x[src] - x[dst]).pow(2).sum(dim=-1, keepdim=True)  # (E, 1) squared distance
+        edge_input = torch.cat([h[src], h[dst], d_ij], dim=-1)     # (E, 2*d_h + 1)
+        m_ij = self.phi_e(edge_input)                                # (E, d_h)
+
+        # 2. Position update (equivariant)
+        w_ij = torch.tanh(self.phi_x(m_ij))     # (E, 1) scalar weight
+        x_diff = x[src] - x[dst]                 # (E, 3) direction vectors
+        weighted_diff = w_ij * x_diff             # (E, 3)
+
+        # Aggregate weighted diffs per node, normalized by degree
+        N = h.shape[0]
+        agg_x = torch.zeros(N, 3, device=x.device, dtype=x.dtype)
+        agg_x.scatter_add_(0, dst.unsqueeze(-1).expand_as(weighted_diff), weighted_diff)
+
+        # Normalize by neighbor count
+        degree = torch.zeros(N, 1, device=x.device, dtype=x.dtype)
+        degree.scatter_add_(0, dst.unsqueeze(-1), torch.ones(src.shape[0], 1, device=x.device))
+        degree = degree.clamp(min=1)
+
+        x_new = x + agg_x / degree  # (N, 3)
+
+        # 3. Scalar feature update (invariant) with residual
+        agg_m = torch.zeros(N, m_ij.shape[1], device=h.device, dtype=h.dtype)
+        agg_m.scatter_add_(0, dst.unsqueeze(-1).expand_as(m_ij), m_ij)
+
+        node_input = torch.cat([h, agg_m], dim=-1)  # (N, 2*d_h)
+        h_new = self.layer_norm(self.phi_h(node_input) + h)  # Residual + LayerNorm
+
+        return h_new, x_new
+
+
+# ============================================================
+# GVP-Enhanced EGNN Layer (adds directional vector features)
+# ============================================================
+
+class GVPEGNNLayer(nn.Module):
+    """
+    GVP-enhanced EGNN layer that adds equivariant direction vectors
+    to the message passing, giving the model access to angular structure.
+
+    Key additions over EGNNLayer:
+      - Edge direction vectors dir_ij = (x_j - x_i) / ||x_j - x_i||
+      - Scalar-gated vector expansion to v_dim channels
+      - Aggregated vector norms as extra scalar features in node update
+    """
+
+    def __init__(self, hidden_dim, v_dim=8):
+        super().__init__()
+        d_h = hidden_dim
+        self.v_dim = v_dim
+
+        # Edge MLP: phi_e([h_i, h_j, d_ij², ||gated_vectors||]) -> message
+        # Extra v_dim scalars from gated direction vector norms
+        self.phi_e = nn.Sequential(
+            nn.Linear(2 * d_h + 1 + v_dim, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # Coord MLP: phi_x(message) -> scalar weight for position update
+        self.phi_x = nn.Sequential(
+            nn.Linear(d_h, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, 1),
+        )
+
+        # Node MLP: phi_h([h_i, agg_messages, ||agg_vectors||]) -> updated features
+        # Extra v_dim scalars from aggregated vector norms
+        self.phi_h = nn.Sequential(
+            nn.Linear(2 * d_h + v_dim, d_h),
+            nn.SiLU(),
+            nn.Linear(d_h, d_h),
+        )
+
+        # GVP: scalar-dependent gating for vector expansion
+        # Maps edge scalar features -> v_dim gate values
+        self.vector_gate = nn.Sequential(
+            nn.Linear(2 * d_h + 1, v_dim),
+            nn.Sigmoid(),
+        )
+
+        # LayerNorm after residual
+        self.layer_norm = nn.LayerNorm(d_h)
+
+    def forward(self, h, x, edge_index):
+        """
+        Args:
+            h: (N, d_h) scalar node features
+            x: (N, 3)   node positions
+            edge_index: (2, E) graph edges [sources, destinations]
+
+        Returns:
+            h_new: (N, d_h) updated scalar features
+            x_new: (N, 3)   updated positions
+        """
+        src, dst = edge_index
+        N = h.shape[0]
+
+        # 1. Compute edge geometry
+        x_diff = x[src] - x[dst]                                  # (E, 3)
+        d_ij_sq = x_diff.pow(2).sum(dim=-1, keepdim=True)         # (E, 1)
+        # Use F.normalize for numerically safe unit vectors (no sqrt/div gradient issues)
+        dir_ij = F.normalize(x_diff, dim=-1)                       # (E, 3) unit vectors
+
+        # 2. GVP: scalar-gated vector expansion
+        # Gate depends on scalar node features + distance (rotation-invariant)
+        gate_input = torch.cat([h[src], h[dst], d_ij_sq], dim=-1)  # (E, 2*d_h+1)
+        gate = self.vector_gate(gate_input)                         # (E, v_dim)
+
+        # Expand dir_ij to v_dim channels, gated by scalar features
+        # dir_ij: (E, 3), gate: (E, v_dim) -> vectors: (E, v_dim, 3)
+        vectors = dir_ij.unsqueeze(1) * gate.unsqueeze(2)          # (E, v_dim, 3)
+
+        # Rotation-invariant scalar: norms of each vector channel
+        # Use sqrt(x²+eps) instead of .norm() to avoid grad explosion at zero
+        vec_norms = (vectors.pow(2).sum(dim=-1) + 1e-8).sqrt()     # (E, v_dim)
+
+        # 3. Edge messages with GVP scalar features
+        edge_input = torch.cat([h[src], h[dst], d_ij_sq, vec_norms], dim=-1)
+        m_ij = self.phi_e(edge_input)                               # (E, d_h)
+
+        # 4. Position update (same as EGNN — equivariant)
+        w_ij = torch.tanh(self.phi_x(m_ij))                        # (E, 1)
+        weighted_diff = w_ij * x_diff                               # (E, 3)
+
+        agg_x = torch.zeros(N, 3, device=x.device, dtype=x.dtype)
+        agg_x.scatter_add_(0, dst.unsqueeze(-1).expand_as(weighted_diff), weighted_diff)
+
+        degree = torch.zeros(N, 1, device=x.device, dtype=x.dtype)
+        degree.scatter_add_(0, dst.unsqueeze(-1), torch.ones(src.shape[0], 1, device=x.device))
+        degree = degree.clamp(min=1)
+
+        x_new = x + agg_x / degree
+
+        # 5. Aggregate vector messages per node -> compute norms
+        # vectors: (E, v_dim, 3) -> aggregate per destination node
+        vectors_flat = vectors.view(-1, self.v_dim * 3)  # (E, v_dim*3)
+        agg_v = torch.zeros(N, self.v_dim * 3, device=h.device, dtype=h.dtype)
+        agg_v.scatter_add_(0, dst.unsqueeze(-1).expand_as(vectors_flat), vectors_flat)
+        agg_v = agg_v.view(N, self.v_dim, 3)             # (N, v_dim, 3)
+        # sqrt(x²+eps) for gradient-safe norm
+        agg_v_norms = (agg_v.pow(2).sum(dim=-1) + 1e-8).sqrt()  # (N, v_dim)
+
+        # 6. Scalar feature update with GVP vector norms
+        agg_m = torch.zeros(N, m_ij.shape[1], device=h.device, dtype=h.dtype)
+        agg_m.scatter_add_(0, dst.unsqueeze(-1).expand_as(m_ij), m_ij)
+
+        node_input = torch.cat([h, agg_m, agg_v_norms], dim=-1)
+        h_new = self.layer_norm(self.phi_h(node_input) + h)
+
+        return h_new, x_new
+
+
+# ============================================================
+# Auxiliary Prediction Heads (for unified training)
+# ============================================================
+
+class DirectionHead(nn.Module):
+    """
+    Predicts direction (unit vector on S²) and concentration (kappa)
+    from the latent embedding z, for vMF auxiliary loss.
+    """
+
+    def __init__(self, d_latent=384):
+        super().__init__()
+        self.mu_net = nn.Sequential(
+            nn.Linear(d_latent, 128), nn.SiLU(), nn.Linear(128, 3)
+        )
+        self.kappa_net = nn.Sequential(
+            nn.Linear(d_latent, 64), nn.SiLU(), nn.Linear(64, 1)
+        )
+
+    def forward(self, z):
+        mu_hat = F.normalize(self.mu_net(z), dim=-1)      # unit vector on S²
+        kappa = F.softplus(self.kappa_net(z)) + 1.0        # concentration > 1
+        return mu_hat, kappa
+
+
+class EnergyHead(nn.Module):
+    """
+    Predicts energy and log-uncertainty from the latent embedding z,
+    for heteroscedastic Gaussian auxiliary loss.
+
+    Args:
+        log_energy: if True, the head predicts the target directly in
+            (natural) log-energy space — no softplus positivity constraint,
+            since log(E) can be negative for E < 1 keV. The Gaussian NLL is
+            then evaluated in log space (a log-normal energy model), which
+            matches the log-uniform energy prior used to generate the data.
+            sigma_clamp is widened accordingly.
+    """
+
+    def __init__(self, d_latent=384, log_energy=False):
+        super().__init__()
+        self.log_energy = log_energy
+        self.net = nn.Sequential(
+            nn.Linear(d_latent, 128), nn.SiLU(),
+            nn.Linear(128, 64), nn.SiLU(),
+            nn.Linear(64, 2),
+        )
+
+    def forward(self, z):
+        out = self.net(z)
+        if self.log_energy:
+            E_pred = out[:, 0]                       # log-energy, unconstrained
+            log_sigma = out[:, 1].clamp(-6.0, 3.0)   # sigma of log E
+        else:
+            E_pred = F.softplus(out[:, 0])           # energy > 0 (linear keV)
+            log_sigma = out[:, 1].clamp(-2.0, 4.0)   # σ ∈ [0.14, 55] keV
+        return E_pred, log_sigma
+
+
+# ============================================================
+# EGNN Backbone (stacked layers)
+# ============================================================
+
+class EGNNBackbone(nn.Module):
+    """
+    Stack of EGNN layers with shared kNN graph.
+
+    Initializes scalar features h to 1 for real points, 0 for padding.
+    Supports both original EGNNLayer and GVP-enhanced GVPEGNNLayer.
+    """
+
+    def __init__(self, hidden_dim=64, n_layers=4, use_gvp=False, v_dim=8):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.n_layers = n_layers
+        self.use_gvp = use_gvp
+
+        # Initial feature projection (from 1-dim indicator to hidden_dim)
+        self.h_init = nn.Linear(1, hidden_dim)
+
+        # EGNN layers (original or GVP-enhanced)
+        if use_gvp:
+            self.layers = nn.ModuleList([
+                GVPEGNNLayer(hidden_dim, v_dim=v_dim) for _ in range(n_layers)
+            ])
+        else:
+            self.layers = nn.ModuleList([
+                EGNNLayer(hidden_dim) for _ in range(n_layers)
+            ])
+
+    def forward(self, flat_coords, edge_index, real_counts, batch_vec):
+        """
+        Args:
+            flat_coords: (total_real, 3) coordinates of real points only
+            edge_index:  (2, E) kNN graph edges
+            real_counts: (B,) number of real points per track
+            batch_vec:   (total_real,) batch assignment
+
+        Returns:
+            h_final: (total_real, d_h) scalar features per point
+            x_final: (total_real, 3) updated positions per point
+        """
+        N = flat_coords.shape[0]
+
+        # Initialize h: all ones for real points (indicator feature)
+        h_indicator = torch.ones(N, 1, device=flat_coords.device)
+        h = self.h_init(h_indicator)  # (N, d_h)
+
+        x = flat_coords.clone()
+
+        # Stack EGNN layers
+        for layer in self.layers:
+            h, x = layer(h, x, edge_index)
+
+        return h, x
+
+
+# ============================================================
+# Dual-Channel Readout
+# ============================================================
+
+class ScalarReadout(nn.Module):
+    """
+    Channel A: Rotation-invariant readout for energy + morphology.
+    Mean pool + max pool over real points, concatenated.
+    """
+
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.output_dim = 2 * hidden_dim
+
+    def forward(self, h, batch_vec, real_counts):
+        """
+        Args:
+            h: (total_real, d_h) per-point scalar features
+            batch_vec: (total_real,) batch assignment
+            real_counts: (B,) real point counts
+
+        Returns:
+            e_scalar: (B, 2*d_h) concatenated mean and max pool
+        """
+        B = real_counts.shape[0]
+        d_h = h.shape[1]
+        device = h.device
+
+        # Mean pool
+        h_sum = torch.zeros(B, d_h, device=device, dtype=h.dtype)
+        h_sum.scatter_add_(0, batch_vec.unsqueeze(-1).expand_as(h), h)
+        h_mean = h_sum / real_counts.unsqueeze(-1).float().clamp(min=1)
+
+        # Max pool (initialize with -inf)
+        h_max = torch.full((B, d_h), float('-inf'), device=device, dtype=h.dtype)
+        h_max.scatter_reduce_(0, batch_vec.unsqueeze(-1).expand_as(h), h, reduce='amax')
+
+        return torch.cat([h_mean, h_max], dim=-1)  # (B, 2*d_h)
+
+
+class VectorReadout(nn.Module):
+    """
+    Channel B: Rotation-equivariant readout for direction.
+
+    Two complementary equivariant mechanisms:
+      (1) K attention heads, each producing a weighted sum of positions
+          (a FIRST moment — a weighted centroid).
+      (2) [optional] Principal-axis features: the top-n_axes eigenvectors of
+          the per-track coordinate covariance (a SECOND moment), extracted by
+          differentiable power iteration. A recoil track is elongated ALONG the
+          recoil direction, so its principal axis IS the directional signal —
+          something a convex combination of points cannot represent on its own.
+          Each axis is sign-fixed by the skewness of the point projection along
+          it, so the axis vector also carries head/tail orientation. Equivariant
+          by construction (eigenvectors of an equivariant covariance), and
+          additive — the model is free to ignore it.
+    """
+
+    def __init__(self, hidden_dim, n_heads=8, d_proj=32,
+                 use_axis_feats=True, n_axes=2, axis_iters=4):
+        super().__init__()
+        self.n_heads = n_heads
+        self.d_proj = d_proj
+        self.use_axis_feats = use_axis_feats
+        self.n_axes = n_axes
+        self.axis_iters = axis_iters
+        self.output_dim = n_heads * d_proj + (n_axes * d_proj if use_axis_feats else 0)
+
+        # Attention MLPs (one per head)
+        self.attn_mlps = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, 64),
+                nn.SiLU(),
+                nn.Linear(64, 1),
+            )
+            for _ in range(n_heads)
+        ])
+
+        # Projection matrices (3D vector -> d_proj)
+        self.projections = nn.ModuleList([
+            nn.Linear(3, d_proj, bias=False)
+            for _ in range(n_heads)
+        ])
+
+        # Separate projections for the principal-axis vectors
+        if use_axis_feats:
+            self.axis_projections = nn.ModuleList([
+                nn.Linear(3, d_proj, bias=False)
+                for _ in range(n_axes)
+            ])
+
+    def forward(self, h, x, batch_vec, real_counts):
+        """
+        Args:
+            h: (total_real, d_h) per-point scalar features (invariant)
+            x: (total_real, 3)   per-point positions (equivariant)
+            batch_vec: (total_real,) batch assignment
+            real_counts: (B,)
+
+        Returns:
+            e_vector: (B, output_dim) concatenated equivariant features
+        """
+        B = real_counts.shape[0]
+        device = h.device
+        head_outputs = []
+
+        for k in range(self.n_heads):
+            # Compute attention scores from invariant features
+            alpha = self.attn_mlps[k](h).squeeze(-1)  # (total_real,)
+
+            # Masked softmax per track
+            # Set padding scores to -inf (but we only have real points here)
+            # We need per-batch softmax
+            alpha_exp = torch.exp(alpha - self._scatter_max(alpha, batch_vec, B))
+            alpha_sum = torch.zeros(B, device=device, dtype=alpha_exp.dtype)
+            alpha_sum.scatter_add_(0, batch_vec, alpha_exp)
+            weights = alpha_exp / alpha_sum[batch_vec].clamp(min=1e-8)  # (total_real,)
+
+            # Weighted sum of positions
+            weighted_x = weights.unsqueeze(-1) * x  # (total_real, 3)
+            v_k = torch.zeros(B, 3, device=device, dtype=x.dtype)
+            v_k.scatter_add_(0, batch_vec.unsqueeze(-1).expand_as(weighted_x), weighted_x)
+            # v_k is (B, 3) — equivariant!
+
+            # Project to higher dimension
+            p_k = self.projections[k](v_k)  # (B, d_proj)
+            head_outputs.append(p_k)
+
+        # --- Principal-axis (second-moment) features ---
+        if self.use_axis_feats:
+            axis_vecs = self._principal_axes(x, batch_vec, real_counts, B)
+            for a in range(self.n_axes):
+                head_outputs.append(self.axis_projections[a](axis_vecs[a]))
+
+        return torch.cat(head_outputs, dim=-1)  # (B, output_dim)
+
+    def _principal_axes(self, x, batch_vec, real_counts, B):
+        """Top-n_axes eigenvectors of the per-track coordinate covariance,
+        via differentiable power iteration with deflation. Each is sign-fixed
+        by the skewness of the point projection along it (head/tail aware).
+        Returns a list of n_axes tensors, each (B, 3) and equivariant."""
+        device, dtype = x.device, x.dtype
+        counts = real_counts.clamp(min=1).to(dtype)
+
+        # Per-track centroid and centered coordinates
+        csum = torch.zeros(B, 3, device=device, dtype=dtype)
+        csum.scatter_add_(0, batch_vec.unsqueeze(-1).expand_as(x), x)
+        centroid = csum / counts.unsqueeze(-1)
+        xc = x - centroid[batch_vec]  # (total_real, 3)
+
+        # Per-track covariance (B, 3, 3)
+        outer = xc.unsqueeze(-1) * xc.unsqueeze(-2)  # (total_real, 3, 3)
+        Csum = torch.zeros(B, 3, 3, device=device, dtype=dtype)
+        Csum.scatter_add_(0, batch_vec.view(-1, 1, 1).expand_as(outer), outer)
+        C = Csum / counts.view(B, 1, 1)
+
+        axes = []
+        C_work = C
+        for a in range(self.n_axes):
+            v, lam = self._power_iteration(C_work, self.axis_iters)
+            v = self._sign_fix(v, xc, batch_vec, B)
+            axes.append(v)
+            # Deflate so the next iteration finds the next eigenvector
+            C_work = C_work - lam.view(B, 1, 1) * torch.bmm(v.unsqueeze(-1), v.unsqueeze(1))
+        return axes
+
+    @staticmethod
+    def _power_iteration(C, n_iter):
+        """Dominant eigenvector of symmetric PSD C (B,3,3) by power iteration.
+        Deterministic [1,1,1] init (no RNG); eps-guarded normalization."""
+        B = C.shape[0]
+        v = torch.ones(B, 3, device=C.device, dtype=C.dtype)
+        v = F.normalize(v, dim=-1, eps=1e-8)
+        for _ in range(n_iter):
+            v = torch.bmm(C, v.unsqueeze(-1)).squeeze(-1)  # (B, 3)
+            v = F.normalize(v, dim=-1, eps=1e-8)
+        lam = torch.einsum('bi,bij,bj->b', v, C, v)  # Rayleigh quotient (B,)
+        return v, lam
+
+    @staticmethod
+    def _sign_fix(v, xc, batch_vec, B):
+        """Orient v so the third moment (skewness) of the point projection along
+        v is non-negative — an equivariant, head/tail-meaningful sign choice."""
+        proj = (xc * v[batch_vec]).sum(-1)  # (total_real,)
+        skew = torch.zeros(B, device=v.device, dtype=v.dtype)
+        skew.scatter_add_(0, batch_vec, proj.pow(3))
+        sign = torch.where(skew >= 0, torch.ones_like(skew), -torch.ones_like(skew))
+        return v * sign.unsqueeze(-1)
+
+    def _scatter_max(self, src, index, num_groups):
+        """Compute per-group max for numerically stable softmax."""
+        out = torch.full((num_groups,), float('-inf'), device=src.device, dtype=src.dtype)
+        out.scatter_reduce_(0, index, src, reduce='amax')
+        return out[index]
+
+
+class FusionMLP(nn.Module):
+    """Fuse scalar and vector channels into a fixed-size latent embedding."""
+
+    def __init__(self, scalar_dim, vector_dim, d_latent=256):
+        super().__init__()
+        total_dim = scalar_dim + vector_dim
+        self.mlp = nn.Sequential(
+            nn.Linear(total_dim, 512),
+            nn.LayerNorm(512),
+            nn.SiLU(),
+            nn.Dropout(0.1),
+            nn.Linear(512, d_latent),
+        )
+
+    def forward(self, e_scalar, e_vector):
+        e_full = torch.cat([e_scalar, e_vector], dim=-1)
+        return self.mlp(e_full)
+
+
+# ============================================================
+# Full EGNN Embedding Network (for SBI)
+# ============================================================
+
+class EGNNEmbedding(nn.Module):
+    """
+    Complete EGNN embedding network that plugs into SBI's SNPE.
+
+    Takes a flattened padded tensor (B, N_max * 3) from SBI,
+    reshapes it, builds kNN graph, runs EGNN + readout, and
+    returns a fixed-size embedding (B, d_latent).
+
+    Args:
+        n_max:      maximum number of points per track (padding size)
+        hidden_dim: EGNN hidden feature dimension
+        n_layers:   number of EGNN layers
+        k:          number of nearest neighbors for graph
+        n_heads:    number of attention heads in vector readout
+        d_proj:     projection dimension per head
+        d_latent:   final embedding dimension
+    """
+
+    def __init__(
+        self,
+        n_max,
+        hidden_dim=64,
+        n_layers=4,
+        k=16,
+        n_heads=8,
+        d_proj=32,
+        d_latent=256,
+        use_gvp=False,
+        v_dim=8,
+        use_axis_feats=True,
+        n_axes=2,
+    ):
+        super().__init__()
+        self.n_max = n_max
+        self.k = k
+
+        # Backbone (original or GVP-enhanced)
+        self.backbone = EGNNBackbone(
+            hidden_dim=hidden_dim, n_layers=n_layers,
+            use_gvp=use_gvp, v_dim=v_dim
+        )
+
+        # Readout
+        self.scalar_readout = ScalarReadout(hidden_dim)
+        self.vector_readout = VectorReadout(
+            hidden_dim, n_heads=n_heads, d_proj=d_proj,
+            use_axis_feats=use_axis_feats, n_axes=n_axes,
+        )
+        self.fusion = FusionMLP(
+            scalar_dim=self.scalar_readout.output_dim,
+            vector_dim=self.vector_readout.output_dim,
+            d_latent=d_latent,
+        )
+
+    def forward(self, x_flat):
+        """
+        Args:
+            x_flat: Either:
+              - (B, N_max * 3) coords only — computes kNN on the fly (slow, for tests)
+              - (B, N_max * (3 + k)) coords + precomputed kNN neighbors (fast, for training)
+
+        Returns:
+            z: (B, d_latent) fixed-size embedding for the normalizing flow
+        """
+        B = x_flat.shape[0]
+        device = x_flat.device
+        D = x_flat.shape[1]
+
+        coords_only_dim = self.n_max * 3
+        precomputed_dim = self.n_max * (3 + self.k)
+
+        if D == precomputed_dim:
+            # --- FAST PATH: precomputed kNN neighbors embedded in x_flat ---
+            coords_flat = x_flat[:, :coords_only_dim]
+            nbr_flat = x_flat[:, coords_only_dim:]
+
+            coords = coords_flat.view(B, self.n_max, 3)
+            neighbor_idx = nbr_flat.view(B, self.n_max, self.k).long()
+
+            # Mask: padding slots are exactly 0.0 in all 3 coords.
+            # Use exact-zero check so real points near the centroid aren't
+            # incorrectly masked out (the old threshold 1e-8 could do that).
+            mask = coords.abs().sum(dim=-1) > 0.0  # (B, N_max)
+
+            edge_index, batch_vec, flat_coords, real_counts, _ = build_edges_precomputed(
+                coords, mask, neighbor_idx
+            )
+        else:
+            # --- SLOW PATH: compute kNN on the fly (for tests / backward compat) ---
+            coords = x_flat.view(B, self.n_max, 3)
+            mask = coords.abs().sum(dim=-1) > 0.0
+
+            edge_index, batch_vec, flat_coords, real_counts, _ = build_knn_graph(
+                coords, mask, k=self.k
+            )
+
+        # Run EGNN backbone
+        h_final, x_final = self.backbone(flat_coords, edge_index, real_counts, batch_vec)
+
+        # Dual-channel readout
+        e_scalar = self.scalar_readout(h_final, batch_vec, real_counts)
+        e_vector = self.vector_readout(h_final, x_final, batch_vec, real_counts)
+
+        # Fusion
+        z = self.fusion(e_scalar, e_vector)
+
+        return z  # (B, d_latent)
+
+
+# ============================================================
+# Cached Embedding Wrapper (for unified training with aux heads)
+# ============================================================
+
+class CachedEGNNEmbedding(nn.Module):
+    """
+    Wrapper around EGNNEmbedding that caches the last embedding z.
+
+    When SBI's flow calls forward(x), it runs the EGNN and stores z.
+    The training loop can then grab cached_embedding.last_z to feed
+    the auxiliary heads without recomputing the forward pass.
+    """
+
+    def __init__(self, embedding: EGNNEmbedding):
+        super().__init__()
+        self.embedding = embedding
+        self.last_z = None
+
+        # Expose attributes that SBI/flow might need
+        self.n_max = embedding.n_max
+        self.k = embedding.k
+
+    def forward(self, x_flat):
+        z = self.embedding(x_flat)
+        self.last_z = z
+        return z
+
+
+# ============================================================
+# Scalar-Augmented Embedding (for Stage 2 energy improvement)
+# ============================================================
+
+class ScalarAugmentedEmbedding(nn.Module):
+    """
+    Wraps a frozen CachedEGNNEmbedding and appends two physics scalar
+    features to the latent z, enriching the flow conditioning with
+    energy-informative statistics that the backbone alone doesn't expose:
+
+      Feature 0: log(n_vac + 1)          — vacancy count (E ∝ N)
+      Feature 1: log(lateral_spread + ε) — transverse straggling
+
+    Both features are computed directly from x_flat (PCA-aligned coords)
+    and normalized using training-set mean/std.  The backbone is expected
+    to be frozen before this wrapper is constructed.
+
+    Output dim: D_LATENT + 2  (drop-in for CachedEGNNEmbedding in build_flow)
+    """
+
+    def __init__(self, base_embedding: CachedEGNNEmbedding,
+                 n_max: int,
+                 scalar_mean: torch.Tensor,
+                 scalar_std: torch.Tensor):
+        super().__init__()
+        self.base = base_embedding          # frozen backbone
+        self.n_max = n_max
+        self.k = base_embedding.k           # forward so eval code can find it
+        self.register_buffer('scalar_mean', scalar_mean.float())
+        self.register_buffer('scalar_std',  scalar_std.float())
+        self.last_z = None
+
+    def forward(self, x_flat: torch.Tensor) -> torch.Tensor:
+        z = self.base(x_flat)               # (B, D_LATENT)  — no grad through backbone
+
+        B = x_flat.shape[0]
+        coords = x_flat[:, :self.n_max * 3].view(B, self.n_max, 3)
+        mask   = coords.abs().sum(dim=-1) > 0.0            # (B, N_max)
+
+        n_vac  = mask.sum(dim=1).float()                   # (B,)
+
+        # Lateral spread: variance of y, z in PCA-aligned normalised coords
+        yz      = coords[:, :, 1:]                         # (B, N_max, 2)
+        mask_f  = mask.float().unsqueeze(-1)               # (B, N_max, 1)
+        yz_mean = (yz * mask_f).sum(dim=1) / n_vac.unsqueeze(-1).clamp(min=1)
+        yz_dev  = (yz - yz_mean.unsqueeze(1)) * mask_f
+        lat_var = (yz_dev.pow(2) * mask_f).sum(dim=(1, 2)) / n_vac.clamp(min=1)
+
+        sf = torch.stack([
+            torch.log(n_vac  + 1.0),
+            torch.log(lat_var + 1e-4),
+        ], dim=-1)                                         # (B, 2)
+
+        sf = (sf - self.scalar_mean) / self.scalar_std.clamp(min=1e-8)
+
+        z_aug = torch.cat([z, sf], dim=-1)                 # (B, D_LATENT + 2)
+        self.last_z = z_aug
+        self.base.last_z = z_aug                           # keep aux-head cache in sync
+        return z_aug
+
+
+# ============================================================
+# Physics-Augmented Embedding (unified, used in BOTH training stages)
+# ============================================================
+
+class PhysicsAugmentedEmbedding(nn.Module):
+    """
+    Wraps an EGNNEmbedding backbone and appends a block of precomputed,
+    Oh-invariant physics descriptors to the latent z, enriching the flow
+    conditioning with size/shape information that the per-track-normalized
+    geometry hides from the backbone:
+
+        [log n_vac, log max_extent, log R_gyration, elongation1, elongation2]
+
+    These are computed once in `preprocess_egnn` (on the physical, un-normalized
+    coordinates) and carried as the trailing `n_phys` columns of x_flat:
+
+        x_flat = [ coords (n_max*3) | knn_idx (n_max*k) | phys (n_phys) ]
+
+    The descriptors are standardized here with training-set statistics. Because
+    they are Oh-invariant, they are unchanged by the training-time augmentation
+    (and by group test-time augmentation), so they can be precomputed once.
+
+    This replaces the Stage-2-only ScalarAugmentedEmbedding: the physics features
+    are now available from Stage 1, so the whole flow (not just a fine-tuned
+    head) can exploit them. Output dim: d_latent + n_phys.
+
+    Attributes exposed for the eval/diagnostics code:
+        .k, .n_max     — forwarded from the backbone (chain-walk lookup)
+        .n_phys        — number of trailing physics columns
+        .log_energy    — whether the flow's energy axis (theta[:,0]) is modeled
+                         in natural-log space (eval must exp() the samples)
+    """
+
+    def __init__(self, base_embedding: 'EGNNEmbedding', n_max: int, k: int,
+                 n_phys: int, phys_mean: torch.Tensor, phys_std: torch.Tensor,
+                 log_energy: bool = False):
+        super().__init__()
+        self.base = base_embedding
+        self.n_max = n_max
+        self.k = k
+        self.n_phys = n_phys
+        self.log_energy = log_energy
+        self.register_buffer('phys_mean', phys_mean.float())
+        self.register_buffer('phys_std', phys_std.float())
+        self.last_z = None
+
+    def forward(self, x_flat: torch.Tensor) -> torch.Tensor:
+        core_dim = self.n_max * (3 + self.k)
+        x_core = x_flat[:, :core_dim]                 # coords + knn for the backbone
+        phys = x_flat[:, core_dim:core_dim + self.n_phys]   # (B, n_phys)
+
+        z = self.base(x_core)                         # (B, d_latent)
+
+        phys_std = (phys - self.phys_mean) / self.phys_std.clamp(min=1e-8)
+        z_aug = torch.cat([z, phys_std], dim=-1)      # (B, d_latent + n_phys)
+
+        self.last_z = z_aug
+        return z_aug

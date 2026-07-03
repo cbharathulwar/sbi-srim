@@ -1,0 +1,27 @@
+# Generated data, caches, and model outputs (regenerate with the scripts)
+data/
+results/
+*.csv
+*.pt
+*.egnn_cache.pt
+
+# SIIMPL / SRIM binaries and outputs
+SRIM-2013/
+*.output
+*.ion
+*.save
+
+# Logs / tensorboard
+sbi-logs/
+*.log
+*.tfevents*
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Editor / OS
+.vscode/
+.DS_Store
