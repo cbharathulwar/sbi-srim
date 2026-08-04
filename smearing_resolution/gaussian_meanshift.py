@@ -1,37 +1,4 @@
-"""Correct resolution-blur model: Gaussian mean-shift mode-finding.
 
-PLAIN-ENGLISH VERSION OF THE IDEA:
-  1. Put a soft, fading "bump" of brightness at every true point (a Gaussian
-     blob of width sigma). Add all the bumps together -- that sum is the
-     blurred picture a real resolution-limited detector would produce.
-  2. What you actually SEE as a distinct spot is a local peak ("hilltop") in
-     that blurred picture. Two points close together have their bumps
-     overlap so much they merge into ONE hilltop (unresolvable). Two points
-     far apart keep separate hilltops (resolvable).
-  3. Mean-shift finds these hilltops without scanning the whole picture:
-     drop a marker on each point and let it "walk uphill" -- each step, move
-     it to the weighted-average position of all the true points, weighting
-     closer points more heavily. This always moves toward higher brightness
-     and is guaranteed to converge onto a hilltop (a real, proven math
-     result, not a heuristic). Points whose markers walk to the same hilltop
-     get merged into one blob.
-
-Two simpler alternatives were tried first and rejected:
-  - independent jitter per point: adds noise but never actually MERGES two
-    points into one, so it can't model unresolvability at all.
-  - single-linkage clustering: chains points together through any path of
-    small hops, even across an entire elongated track -- doesn't match how
-    real blur works (only things that are ACTUALLY close together merge).
-
-BRIGHTNESS: a resolved blob made of many merged points is genuinely brighter
-in a real fluorescence image (more emitters = more photons) than a blob made
-of just one point. That information used to be thrown away here -- this
-version keeps it. `brightness` for each returned blob = how many true points
-merged into it, the simplest available proxy (assumes every point/NV
-contributes equally; a real system could have unequal per-emitter
-brightness, e.g. from orientation or local strain, but this is a reasonable
-default absent better information).
-"""
 import numpy as np
 
 
@@ -44,26 +11,13 @@ def gaussian_mean_shift_merge(pts, sigma, max_iter=500, tol_frac=1e-5, merge_fra
         sigma: bandwidth (same units as pts, e.g. Angstrom) -- how blurry the
             imaging is. Bigger sigma = points have to be farther apart to
             stay resolved.
-        max_iter: give up "walking uphill" after this many steps per point.
-            Near a marginal (barely-resolvable) separation the walk converges
-            slowly, so this is set generously high -- too low a cap can stop
-            the walk before same-peak markers have actually come together,
-            making the code report two blobs where there's really only one.
+        max_iter: number of iterations to move trackers
         tol_frac: once a point's marker moves less than this fraction of
-            sigma in one step, treat it as converged (found its hilltop). Set
-            small (not just "small enough") so the leftover gap between
-            same-peak markers ends up much smaller than merge_frac*sigma --
-            otherwise the grouping step below can't tell "same peak, tiny
-            numerical residue" apart from "two really distinct peaks that
-            happen to be close."
-        merge_frac: after everything converges, markers within this fraction
-            of sigma of each other are considered "the same hilltop" and get
-            merged (they won't land on EXACTLY the same spot due to finite
-            iterations, so this is a small tolerance, not zero). Only
-            meaningful once tol_frac is tight enough that same-peak markers
-            converge to much less than merge_frac*sigma apart -- see above.
+            sigma in one step, treat it as converged
+        merge_frac: after everything converges, merge markers within this fraction
+            of sigma of each other
         return_brightness: if True, also return how many true points merged
-            into each blob (see BRIGHTNESS note above).
+            into each blob.
 
     Returns:
         (M,3) array of blob centroids, M <= N.
