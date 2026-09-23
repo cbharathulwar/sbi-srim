@@ -1,0 +1,605 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{v23: A Combined Architecture Specification\\
+\large Synthesizing the v22 Baseline with the a100\_final Blur-Robustness Diagnosis}
+\author{Internal architecture plan --- document only, no code}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document specifies \textbf{v23}, a single combined architecture that grafts the
+demonstrated strengths of \code{train\_gvp\_egnn\_v22.py} (a strong, well-calibrated
+zero-blur baseline) onto the diagnosed, evidence-based blur-robustness fixes developed in
+the \code{a100\_final} rebuild. It is written to be buildable from this document alone: every
+component names its exact source, its exact formula, and its exact integration point.
+Two goals are pre-registered before any training happens, in the same spirit as every gate
+used earlier in this project.
+\end{abstract}
+
+\tableofcontents
+
+%==============================================================================
+\section{Pre-registered goals}
+%==============================================================================
+
+\textbf{Goal 1 --- reconstruction.} Minimize median angular error and maximize head-tail
+accuracy, beating the classical PCA/geometric baseline, in every regime where the physics
+permits it. \emph{Scoped explicitly}: this session established, three independent ways
+(an analytical statistical bound; the trained R7 network converging to 99.3\% numerical
+agreement with plain PCA; a separate non-neural method using deliberately richer
+hand-engineered shape features finding no rescue), that low energy (1--5~keV) under real
+blur ($\sigma\gtrsim3$--10~nm) is a genuine, near-irreducible information floor for any
+point-cloud-shape-based estimator. \textbf{Beating PCA at the low-energy/high-blur floor is
+explicitly not a goal of v23.} The goal applies to: (a) near-zero blur across all three
+energy tiers, and (b) mid/high energy across the full blur range $\sigma\in\{0,\dots,100\}$nm.
+
+\textbf{Goal 2 --- calibration.} Genuine, well-calibrated uncertainty (empirical coverage
+close to nominal at multiple confidence levels, low ECE) produced by the architecture, loss,
+and training procedure themselves, \textbf{with no post-hoc temperature scaling or
+recalibration map fit on held-out/eval data at any point.} Calibration is a first-class
+design target here, not a bolt-on.
+
+%==============================================================================
+\section{Why v23 exists: the evidentiary chain}
+%==============================================================================
+
+\subsection{The winner lineage and its rebuild}
+The project's original ``winner'' (\code{train\_diag\_r7\_trunc\_only.py}, the R7 lineage)
+built direction estimation around a hard architectural constraint: the predicted direction
+can \emph{only ever} be a re-weighted combination of a small pool of $\sim$12
+mostly-parameter-free candidate vectors (the ``V-bottleneck''), specifically to guarantee
+continuous SO(3) equivariance. \code{a100\_final} (full detail in its own
+\code{README.md}) rebuilt this with five targeted fixes --- $\sigma$ fed into the
+direction-weighting pathway, a blur-deconvolved radius-of-gyration normalizer, blur-corrected
+higher-moment candidate vectors, a widened $K{=}10$ vMF mixture, and a blur-adaptive radius
+graph. Measured result (the ``small'' config, matching the winner's capacity): genuine
+improvement at low blur ($\sigma$=0--6~nm, e.g.\ high-E $\sigma$=0: 8.8$^\circ\to$5.7$^\circ$)
+but \textbf{flat-to-worse at exactly the target regime} (e.g.\ high-E $\sigma$=50~nm:
+32.8$^\circ\to$39.9$^\circ$, a 7.1$^\circ$ regression), and calibration \textbf{worse}, not
+better (ECE $\sim$28--42\% vs.\ a $\sim$20\% prior baseline, \emph{worst specifically where
+the model is most accurate/confident} --- high energy, low blur, ECE $\sim$40\%).
+
+\subsection{The discovery of v22}
+A completed, real run --- \code{python src/scripts/train\_gvp\_egnn\_v22.py
+--directional-head --tag ROT\_FINAL} --- on the \emph{exact same} crystal-rotation corpus
+(\code{data/siimpl\_rot/}) that all of the above used, achieves (from the real
+\code{eval\_results.csv}, 49{,}200 rows / 1{,}000 configs, pooled across 1--105~keV, confirmed
+zero-blur): \textbf{median angular error 6.8$^\circ$ (mean-readout) / 6.7$^\circ$
+(mode-readout), head-tail 97.0\%/96.6\%, coverage gaps of only 2.6--3.3 percentage points}
+(68\% nominal$\to$65.4\% actual, 90\% nominal$\to$86.7\% actual). This is dramatically better
+on all three axes than anything the R7/\code{a100\_final} lineage produced, at zero blur.
+
+\subsection{Why v22 is stronger --- ranked findings from a direct code comparison}
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Head architecture (the largest factor).} v22's \code{DirectionalPosterior}
+      (\code{src/models/directional\_head.py}) is an \emph{unconstrained} MLP
+      (\code{VMFMixture.\_params}, lines 88--94: a 2-hidden-layer \code{\_MLP} with
+      \code{hidden=256}) regressing $K{=}4$ vMF components' $(\mu,\kappa,\text{logit})$
+      directly from the pooled conditioning vector $z$ --- no Gram-matrix step, no
+      restriction to a small candidate-vector pool. Equivariance is approximated purely by
+      the same 48-element discrete $O_h$ augmentation \code{a100\_final} also uses, not
+      architecturally enforced. \textbf{Diamond's true symmetry is the discrete $O_h$
+      crystal group, not continuous SO(3)} --- channeling is itself proof continuous
+      rotational symmetry is broken. The R7/\code{a100\_final} lineage's architectural
+      commitment to continuous equivariance (the V-bottleneck) may therefore have been
+      enforcing an incorrect symmetry constraint the entire time, at a real expressiveness
+      cost, for a guarantee the physics does not have.
+\item \textbf{Two-stage training.} Stage 1 jointly trains the backbone $+$
+      \code{DirectionalPosterior} $+$ two \emph{auxiliary} heads (a separate
+      \code{DirectionHead} giving an auxiliary vMF loss, \code{EnergyHead} giving an
+      auxiliary energy loss), with a sign-aware curriculum on the \emph{auxiliary} direction
+      loss only (see \S\ref{sec:loss}). Stage 2 \textbf{freezes the entire backbone} and
+      trains a fresh, newly-initialized \code{DirectionalPosterior} from scratch on
+      Pool-A-only (isotropic, no channeling enrichment) data. The deployed/evaluated model is
+      Stage 2's checkpoint.
+\item \textbf{Physics-augmented scalar features.} v22 appends 5 pre-truncation scalar
+      features to the conditioning vector (exact formula in \S\ref{sec:physfeat}).
+      \code{a100\_final} has no equivalent.
+\item $K{=}4$ mixture (v22) vs.\ $K{=}10$ (\code{a100\_final}) --- consistent with an older,
+      independent hyperparameter sweep (frozen-backbone head sweep, prior session) that found
+      widening past $K{=}4$ ``gave nothing,'' and consistent with \code{a100\_final}'s $K{=}10$
+      correlating with \emph{worse}, not better, calibration.
+\item The signed-loss curriculum (item 2, detailed in \S\ref{sec:loss}) plausibly explains
+      v22's much higher head-tail accuracy (97\% vs.\ \code{a100\_final}'s $\sim$88--91\%,
+      which uses a fully-decoupled separate sign-classifier).
+\end{enumerate}
+
+\subsection{v22 under blur: also broken, and diagnostically important}
+\code{train\_gvp\_egnn\_dr\_sigma.py}'s own docstring records a zero-shot eval of the
+deployed v22 checkpoint on blurred data collapsing from 6.7$^\circ$/96\% at $\sigma{=}0$ to
+\textbf{77.8$^\circ$/57\% at just 1~nm}, saturating near-random by 3~nm --- a much
+\emph{faster} collapse than R7's more gradual degradation, despite v22's far better starting
+point. \textbf{Root cause, confirmed by reading \code{preprocess\_egnn} (\code{src/utils/data\_utils.py}):
+v22's Stage 1 is called with the default \code{smear\_sigma=0.0} --- the backbone never sees
+a single blurred training example.} Two fixes were already built and actually run to
+completion:
+\begin{itemize}[leftmargin=*]
+\item \code{dr\_sigma}: warm-start from Stage-1 weights, then \textbf{unfreeze everything},
+      fine-tune under blur (30 epochs). Real training log: $\sigma{=}0$ error \emph{drifted
+      up} from 5.96$^\circ$ to $\sim$6.19$^\circ$.
+\item \code{from\_scratch\_dr}: train from a fresh random init with \emph{continuous} blur
+      baked into both stages from epoch 1 (300+21 epochs --- the most thorough possible blur
+      exposure). Real training log: $\sigma{=}0$ error converged to $\sim$7.1--7.2$^\circ$.
+\end{itemize}
+The user who ran both confirms, directly: results under blur were \textbf{poor} for both.
+Neither training log recorded per-sigma-tier held-out performance, so the exact failure
+curve is not recoverable, but the qualitative outcome is confirmed by the person who ran it.
+
+\subsection{The central argument for v23: three independent failures share one missing ingredient}
+\label{sec:central-argument}
+R7 (trained with dynamic blur throughout; this session established the mid/high-energy
+degradation is \emph{bias}, not variance, via a noise-averaging test showing no benefit from
+averaging predictions over repeated independent blur draws of the same track, replicated
+twice with a hemisphere-alignment-bug control), \code{dr\_sigma} (backbone re-exposed to blur
+via unfreezing), and \code{from\_scratch\_dr} (backbone exposed to the maximum possible blur
+from initialization) all fail to achieve blur-robustness. \textbf{All three share exactly one
+property: none of them ever feed the actual blur magnitude into the model as an explicit
+input.} Blur is used only to generate noisy training data, never told to the network. Given
+that ``expose the model to more/different blur'' has now failed three architecturally
+distinct ways, the convergent explanation is that the model, regardless of how much blurred
+data it has seen, has no way to know \emph{which} blur level the current input came from ---
+so it can only learn one compromise behavior, averaged over the training blur distribution,
+which is mathematically guaranteed to be systematically wrong (biased) for any specific
+sigma. This is the single most important, best-evidenced new ingredient in v23.
+
+\textbf{Honest caveat, stated plainly.} \code{a100\_final} \emph{did} include a form of
+sigma-conditioning (feeding $\sigma$ into the V-bottleneck's coefficient-weighting pathway)
+and its backbone \emph{was} already blur-exposed (inherited from R7's dynamic smearing), yet
+the bundled result was still flat-to-worse at target cells. This was never isolated as a
+single-variable test --- it was bundled with four other simultaneous changes, including the
+$K{=}10$ widening independently suspected of hurting calibration, inside an architecture
+(the V-bottleneck) that may have structurally limited how much use a flexible head could make
+of the sigma signal even if it were informative. \textbf{v23's hypothesis is therefore not
+identical to what \code{a100\_final} already tried}: it pairs sigma-conditioning with an
+\emph{unconstrained} head (removing the V-bottleneck) and a backbone whose \emph{pretraining
+stage itself} is exposed to blur (v22's Stage~1 currently is not, at all) --- a configuration
+that has not actually been tested.
+
+%==============================================================================
+\section{v23 component specification}
+%==============================================================================
+
+\subsection{Backbone --- carried forward from v22, unchanged}
+GVP-EGNN with \textbf{hidden\_dim=96, n\_layers=6, k\_neighbors=16 (replaced, see
+\S\ref{sec:graph}), n\_heads=8, d\_proj=48, d\_latent=384, v\_dim=8, n\_axes=2}
+(\code{train\_gvp\_egnn\_v22.py} lines 110--118). No evidence from this session suggests the
+backbone family itself is the problem; the V-bottleneck removal is a \emph{head}-side change
+(\S\ref{sec:head}). \textbf{Capacity is deliberately not re-opened as a question here}: a
+prior-session finding (frozen-backbone head sweep, same lineage as the $K{=}4$ result cited
+above) concluded this backbone is \emph{information-limited, not capacity-limited} at this
+size, and that increasing width/depth wastes compute without recovering signal. v23 inherits
+hidden=96 on that basis, not by default/oversight.
+
+\subsection{Head --- v22's unconstrained design, with $\sigma$ added as a conditioning scalar}
+\label{sec:head}
+Keep \code{DirectionalPosterior} exactly as built: \code{VMFMixture} with
+\textbf{$K{=}4$} components, a 2-hidden-layer MLP (\code{hidden=256}) mapping the
+conditioning vector to $(\mu_k,\kappa_k,\text{logit}_k)_{k=1}^4$
+(\code{directional\_head.py} lines 81--94), and \code{GMM1D} with $K{=}3$ components for
+log-energy. \textbf{Do not reintroduce the V-bottleneck/candidate-vector-pool restriction.}
+
+\textbf{Integration point for $\sigma$-conditioning, revised per external review to use a
+sinusoidal embedding rather than raw scalar concatenation.} A fresh-eyes critique of an
+earlier draft of this plan checked the diffusion/score-model literature specifically for
+this: raw-scalar concatenation of a conditioning value is known to underperform a small
+fixed sinusoidal (Fourier) embedding in that literature, though the effect is
+depth-dependent --- FiLM/adaptive-norm modulation (the deeper diffusion-model-style fix) was
+explicitly \emph{rejected} for v23 as disproportionate, since \code{VMFMixture}/\code{GMM1D}
+are shallow (2-hidden-layer) heads where the signal-dilution problem FiLM solves barely
+applies. The right-sized fix is the embedding alone:
+\[
+  e(\sigma) = \big[\sin(\sigma f_1), \cos(\sigma f_1), \dots, \sin(\sigma f_4), \cos(\sigma f_4)\big],
+  \qquad f_j = \pi\!\cdot\!2^{\,j-1}\ (j=1,\dots,4),
+\]
+applied separately to $\log(\sigma_A+\sigma_0)$ and $\log(\sigma_n+\epsilon_n)$ (8 dims
+each, 16 total), replacing the two raw scalars:
+\[
+  z' = \big[\,z \;;\; e(\log(\sigma_A+\sigma_0)) \;;\; e(\log(\sigma_n+\epsilon_n))\,\big],
+  \qquad \sigma_0 = 1.0\text{\AA (matches \code{a100\_final}'s \code{SIGMA0\_A})}.
+\]
+$\sigma_n = \sigma_A/\text{scale}$ is blur normalized by the per-track scale
+(\S\ref{sec:normalizer}); carry both the absolute and normalized forms, matching
+\code{a100\_final}'s \code{PHYS\_LOG\_SIGMA\_A}/\code{PHYS\_LOG\_SIGMA\_N} convention, for the
+same reasoning as before (absolute value reflects how much the normalizer itself was
+corrected; normalized value reflects how much blur has washed out relative to track size).
+\textbf{Zero-init the weight columns feeding these 16 embedded dims} in
+\code{VMFMixture.net} and \code{GMM1D.net}'s first linear layer, so v23 at initialization is
+behaviorally identical to v22 before any training signal distinguishes sigma values --- same
+zero-init discipline as \code{a100\_final}, verified the same way (compare outputs with the
+new columns zeroed vs.\ populated, at random init, confirm identical).
+
+This is architecturally simpler to add here than it was for \code{a100\_final}'s
+V-bottleneck design: there is no separate ``coefficient pathway'' vs.\ ``confidence
+pathway'' to route sigma into selectively --- it is one MLP, and the embedded sigma is just
+more input columns. $D_{\rm AUG}$ in \S\ref{sec:physfeat} is updated accordingly (16 dims
+for sigma, not 2).
+
+\subsubsection{Structural fallback: a zero-init residual on the raw-PCA axis}
+\label{sec:fallback}
+\textbf{Added after directly measuring \code{from\_scratch\_dr}'s real per-$\sigma$-tier
+held-out performance} (a full 9-$\sigma\times$3-tier sweep run against its actual Stage-2
+checkpoint, not the training log alone): despite a substantially \emph{better} zero-blur
+starting point than R7 (4.9$^\circ$/7.8$^\circ$/11.7$^\circ$ at high/mid/low energy vs.\
+R7's 8.8$^\circ$/17.8$^\circ$/27.8$^\circ$), \code{from\_scratch\_dr} collapses
+\emph{faster and further} than R7 at every meaningful blur level in the target regime ---
+e.g.\ high-energy $\sigma{=}50$nm: R7 32.8$^\circ$ vs.\ \code{from\_scratch\_dr}
+\textbf{83.6$^\circ}$ (near-random); mid-energy $\sigma{=}10$nm: R7 39.7$^\circ$ vs.\
+\textbf{82.0}$^\circ$. This holds even though \code{from\_scratch\_dr} was trained on
+continuous blur from initialization, i.e.\ blur exposure alone (\S\ref{sec:training} item 1)
+does not by itself prevent this collapse.
+
+\textbf{Diagnosis.} R7's architecture cannot produce this failure mode \emph{by
+construction}: its output is always some re-weighted blend of a handful of geometrically
+robust candidates (PCA-type axes, attention centroids), so under distribution shift it can
+at worst default toward the most robust candidate --- it has a structural floor. v22/v23's
+unconstrained MLP head has no analogous floor: nothing prevents its output from behaving
+arbitrarily once its input departs from what dominated training, independent of whether
+$\sigma$-conditioning correctly informs it that this has happened. $\sigma$-conditioning
+(\S\ref{sec:head} above) addresses whether the model \emph{knows} it should be less
+confident; it does not by itself guarantee the point estimate \emph{degrades toward
+something sensible} rather than arbitrarily. These are additive requirements, not
+substitutes, exactly as \S\ref{sec:training} item 1 already argues for blur-exposure vs.\
+sigma-conditioning.
+
+\textbf{Mechanism, revives the highest-ranked unimplemented idea from the project's original
+literature survey}: reparameterize \code{VMFMixture}'s mean direction as a zero-initialized
+residual correction on top of the raw-PCA axis $u$ (already computed as part of
+\S\ref{sec:physfeat}'s feature set, zero learned parameters), rather than an unconstrained
+direct output:
+\[
+  \mu_k = \mathrm{normalize}\big(u + g(\sigma, z')\cdot \delta_k(z')\big),
+\]
+where $\delta_k(z')$ is the MLP's raw (previously final) output for component $k$, and
+$g(\sigma,z')\in[0,1]$ is a learned, sigma-aware gate (a single sigmoid-activated scalar
+per component, taking the embedded $\sigma$ features as input) that the network can use to
+shrink the residual toward zero under high uncertainty. \textbf{Implementation note, precise
+(external review flag --- there is no separate ``$\delta_k$ layer'' in the actual code to
+zero as a unit):} \code{VMFMixture}'s \code{\_MLP} produces all $n_{\rm comp}{\times}5$
+outputs (3 mu-dims $+$ $\kappa$ $+$ logit, interleaved per component) from one shared final
+\code{nn.Linear} (\code{directional\_head.py} line~86). Zero only the weight/bias
+\emph{rows} corresponding to the 3 mu-output dimensions per component, leaving
+$\kappa$/logit rows at their normal initialization --- \emph{or}, verified equally safe,
+zero the entire final layer (then $\kappa=\mathrm{softplus}(0)+\epsilon\approx0.70$ and
+logits are uniform, both reasonable, non-degenerate starting values). Either is correct;
+implement it as a row-level or full-layer zeroing on the existing shared linear layer, not as
+a separate delta submodule, since none exists. This zero-init guarantees $\mu_k = u$ for
+every component \emph{regardless of how the gate $g$ is initialized} --- if $\delta_k=0$
+exactly, $g\cdot\delta_k=0$ for any value of $g$, so no special initialization of $g$ is
+required for the guarantee to hold. v23 begins training
+\emph{mathematically identical to plain PCA}, guaranteeing it can never do meaningfully worse
+than PCA by construction, the same guarantee R7's candidate-vector-pool design provided
+structurally. Unlike R7's design, this does not restrict the model's \emph{ceiling}: $g\to1$
+and an expressive $\delta_k$ recovers the fully unconstrained v22 behavior wherever the data
+supports it (i.e.\ at low blur, where v22's real strength lives), while $g\to0$ under high
+blur recovers graceful PCA-like degradation instead of arbitrary collapse. This is a genuine
+hedge, not a duplicate of $\sigma$-conditioning: it is possible for the gate mechanism to
+still fail to learn the right shrinkage behavior from data alone, but the failure mode is now
+bounded (worst case, an under-shrunk residual behaves like current v22/v23 without this
+section) rather than unbounded (arbitrary collapse), which is a strictly safer starting
+point.
+
+\subsection{Physics-augmented scalar features --- v22's 5, plus higher-moment additions}
+\label{sec:physfeat}
+Keep v22's existing 5 features exactly (\code{src/utils/data\_utils.py} lines 1153--1167),
+computed on the pre-truncation, pre-normalization cloud:
+\[
+  \phi = \big[\log(n_{\rm vac}{+}1),\ \log(\text{extent}{+}\epsilon),\
+        \log(R_g{+}\epsilon),\ \lambda_1/\Sigma\lambda,\ \lambda_2/\Sigma\lambda \big]
+\]
+where $\lambda_1\ge\lambda_2\ge\lambda_3$ are the coordinate covariance eigenvalues.
+\textbf{Note:} feature index 1 (``extent'') is the same L$_\infty$ statistic
+\S\ref{sec:normalizer} replaces for the \emph{normalizer} --- keep it here as a
+\emph{feature} unchanged (it is diagnostic information, not a scale to divide by, so its
+known blur-drift is not a bug in this role), but be aware it is a redundant-but-differently-used
+quantity; do not conflate the two roles when implementing.
+
+\textbf{Add}: a scalar summary of the blur-corrected higher-moment (kurtosis-type) tensor
+already derived and validated in \code{a100\_final} (\code{README.md} \S3, and
+\code{validate\_math.py} TEST~B1/B2):
+\[
+  M = \tfrac{1}{n}\textstyle\sum_i p_i^2\, \mathrm{outer}(x_{c,i}, x_{c,i}),
+  \qquad p_i = x_{c,i}\cdot u,\ u = \text{raw-PCA axis},
+\]
+with the exact blur correction
+\[
+  \hat A = M_{\rm obs} - s^2\big(\widehat{\langle q^2\rangle} I + 4\widehat{\langle q^2\rangle}\, u u^\top + \hat C\big)
+           - s^4\big(I + 2uu^\top\big),
+  \quad s^2 = \sigma_n^2\tfrac{n-1}{n},
+\]
+$\widehat{\langle q^2\rangle}=\langle p^2\rangle_{\rm obs}-s^2$, $\hat C = C_{\rm obs} - s^2 I$.
+\code{a100\_final}'s own validation found the corrected tensor is decisively less biased
+(bias reduction 2.6$\times$--196$\times$ across tested $\sigma$), \textbf{but} on individual
+realizations the \emph{uncorrected} estimator's top eigenvector can outperform the corrected
+one at high blur (uncorrected wins by 11$^\circ$ at $\sigma/R_g{=}2.37$ in
+\code{a100\_final}'s test) because the uncorrected estimator has an accidental shrinkage
+property toward the PCA axis that is itself beneficial there. \textbf{Do not pick one.} Feed
+both as scalar features --- \textbf{using the signed cosine, not a raw angle}, per external
+review: an eigenvector's sign is arbitrary (a sign flip near a degenerate case discontinuously
+jumps a raw angle between values near $0^\circ$ and $180^\circ$, forcing the network to spend
+capacity learning around a self-inflicted discontinuity). Sign-fix each eigenvector to $u$'s
+hemisphere before use, or equivalently use the signed dot product directly:
+\[
+  c_{\rm corr} = \big|u\cdot \mathrm{eig}_1(\hat A)\big|, \qquad
+  c_{\rm uncorr} = \big|u\cdot \mathrm{eig}_1(M_{\rm obs})\big|,
+\]
+(absolute value since axis direction, not sign, is what these features should convey ---
+head/tail is handled separately, \S\ref{sec:loss}), plus the corresponding top eigenvalue
+ratios as a rough confidence proxy. This lets the (now unconstrained, MLP-based) head learn
+which one to trust as a function of $\sigma$ and energy, exactly the arbitration
+\code{a100\_final} intended the reweighted candidate pool to provide, but without forcing a
+static choice at feature-engineering time.
+
+Total conditioning dimension: $D_{\rm AUG} = 384 + 5\,(\text{v22 phys}) + 4\,(\text{new
+higher-moment scalars}) + 16\,(\sigma\text{-conditioning, sinusoidal-embedded}) = 409$.
+
+\subsection{Normalizer --- replace with the blur-deconvolved radius of gyration}
+\label{sec:normalizer}
+Replace v22's legacy normalizer (\code{max\_extent = |centered|.max()}, an L$_\infty$
+extreme-order-statistic proven to drift 2.27$\times$--7.77$\times$ under blur,
+\code{data\_utils.py} line 1153) with \code{a100\_final}'s exact formula
+(\code{data\_pipeline.py} lines 14--17, 64--70):
+\[
+  \text{scale} = \sqrt{\max\!\big(R^2_{\rm obs} - 3\sigma_A^2\tfrac{n-1}{n},\ \text{floor}\big)},
+  \qquad \text{floor} = \max(\text{FLOOR\_ABS},\, (\text{FLOOR\_FRAC}\cdot\sigma_A)^2),
+\]
+where $R^2_{\rm obs} = \tfrac{1}{n}\sum_i |y_i-\bar y|^2$ is the observed mean-squared radius
+of the blurred, centered cloud. This is unbiased in expectation
+($\mathbb{E}[R^2_{\rm obs}] = R^2_{\rm true} + 3\sigma_A^2\tfrac{n-1}{n}$ exactly, no
+approximation). Use the exact \code{FLOOR\_ABS}/\code{FLOOR\_FRAC} constants from
+\code{a100\_final/data\_pipeline.py} (not re-derived here; read them directly from that file
+at build time so v23 matches the already-validated constants rather than a plausible-sounding
+guess).
+
+\subsection{Graph construction --- replace fixed k=16 kNN with the blur-adaptive hybrid}
+\label{sec:graph}
+Replace v22's fixed \code{K\_NEIGHBORS=16} kNN with \code{a100\_final}'s hybrid
+(\code{data\_pipeline.py} \S(5), \code{README.md} \S5): connect each point to all neighbors
+within radius $r=\sqrt{H_0^2+\sigma_n^2}$ \emph{or} its \code{K\_MIN} nearest neighbors,
+whichever gives more edges, capped at \code{K\_MAX}. Use \code{a100\_final}'s already-derived
+constants: \textbf{$H_0=0.05$} (normalized units; chosen from the median unblurred
+nearest-neighbor spacing across energy tiers --- low 0.100, mid 0.039, high 0.012 --- sitting
+between the sparse low/mid-energy regime and the dense high-energy regime),
+\textbf{K\_MIN=8} (anti-starvation floor for sparse low-energy tracks), \textbf{K\_MAX=24}
+(hard cap, a documented approximation). Do not re-derive these; they were fit to the actual
+data distribution already.
+
+%==============================================================================
+\section{Training procedure --- the frozen-backbone question, resolved}
+\label{sec:training}
+%==============================================================================
+
+\textbf{Definitive recommendation: keep the two-stage structure (pretrain jointly, then
+freeze the backbone and train a fresh head), but modify Stage 1 to include dynamic blur
+exposure from the start.} Reasoning:
+
+\begin{enumerate}[leftmargin=*]
+\item v22's catastrophic collapse under blur has a confirmed, specific root cause distinct
+      from sigma-blindness: \textbf{the backbone was never shown a single blurred example}
+      (\code{smear\_sigma=0.0} default, never overridden in v22's \code{prepare\_data}). A
+      frozen backbone that only ever learned to extract structure from perfectly clean point
+      clouds cannot be expected to extract meaningful structure from a genuinely blurry one,
+      \emph{regardless of whether the downstream head is told the blur level}. Sigma-conditioning
+      tells the head how much to trust its input; it cannot manufacture structure the backbone
+      never learned to see. These are two separate, additive requirements, not substitutes for
+      each other.
+\item \code{dr\_sigma} and \code{from\_scratch\_dr} already tested ``give the backbone real
+      blur exposure'' (via unfreezing, and via training from scratch under blur respectively)
+      and both failed --- \textbf{but neither included sigma-conditioning.} This session's
+      established discipline is to change one variable at a time; unfreezing and
+      training-from-scratch are both larger, more disruptive changes to the training
+      procedure than adding blur exposure to an otherwise-unchanged Stage~1. The more
+      surgical, single-new-variable test is: \emph{keep Stage 1's joint-training and
+      freeze-then-fresh-head structure exactly as v22 built it, only add dynamic blur
+      sampling to the data pipeline Stage 1 already uses} (the same \code{P\_ZERO},
+      \code{MIN\_SIGMA\_A}, \code{MAX\_SIGMA\_A} continuous-sigma convention already used in
+      R7/\code{a100\_final}), \emph{and} add sigma-conditioning to the head
+      (\S\ref{sec:head}). This has not been tested in this combination.
+\item If Stage 1 with blur exposure $+$ sigma-conditioned head still fails to generalize
+      across sigma, \emph{then} escalate to unfreezing (re-testing \code{dr\_sigma}'s
+      hypothesis, but this time with sigma-conditioning present) as a follow-up experiment,
+      not a simultaneous one.
+\end{enumerate}
+
+\textbf{Stage 2} continues to freeze the (now blur-exposed) backbone and train a fresh
+\code{DirectionalPosterior} from scratch, as v22 already does --- but Stage 2's training data
+must \emph{also} be drawn under the same dynamic-blur distribution as Stage 1 (v22 currently
+trains Stage 2 on the same clean Pool-A-only data as everything else); a head trained only on
+clean examples, even sitting on top of a blur-aware backbone, would not itself learn to
+modulate its output correctly across sigma.
+
+\textbf{Data corpus:} train on \code{a100\_final}'s expanded \textbf{1{,}009{,}384-track v2
+corpus} (24.9\%/30.0\%/45.2\% low/mid/high energy, deliberately skewed toward the
+fixable mid/high-energy regime), not v22's original $\sim$320k-track pool
+(\code{MAX\_TRAIN\_TRACKS=320\_000}, line 152) --- more data specifically benefits the
+harder, blur-conditioned learning problem v23 takes on, and the pool is already built and
+validated.
+
+%==============================================================================
+\section{Loss function}
+\label{sec:loss}
+%==============================================================================
+
+\subsection{v22's actual mechanism, precisely}
+The deployed posterior's own loss, \code{flow.loss(theta, z)}
+(\code{DirectionalPosterior.loss}, \code{directional\_head.py} lines 158--163), is a fully
+\textbf{signed} vMF-mixture NLL from the first training step --- there is no sign-blind
+option inside \code{VMFMixture} itself. The curriculum described in prior session notes
+(``sign-blind for \code{AUX\_SIGN\_WARMUP=30} epochs, then signed'') applies instead to a
+\emph{separate, auxiliary} \code{DirectionHead} (\code{mu\_hat, kappa}) whose loss
+(\code{axis\_aware\_vmf\_nll} for epoch $<$30, then \code{vmf\_nll}, \code{train\_gvp\_egnn\_v22.py}
+lines 617--620) is added to the total Stage-1 objective purely to inject a stabilizing
+gradient into the \emph{shared backbone} early in training, before the backbone's features are
+reliable enough to support learning head/tail directly. Stage 2's own auxiliary loss
+(lines 1222, 1261) stays \code{axis\_aware} throughout in the current v22 code — confirm
+this is intentional (a design choice to keep Stage 2's auxiliary signal conservative since
+Stage 1 already transferred head/tail-capable features) rather than an oversight before
+carrying it forward unchanged.
+
+\subsection{Interaction with $\sigma$-conditioning}
+\textbf{Recommendation: do not make the curriculum's timing depend on $\sigma$.} The
+curriculum exists to protect early-training gradient stability while backbone features are
+generically unreliable; this is a training-dynamics concern, not a physics one, and there is
+no evidence connecting it to blur specifically. Keep \code{AUX\_SIGN\_WARMUP=30} as-is. What
+\emph{should} change: since Stage 1 now trains under a distribution of $\sigma$
+(\S\ref{sec:training}), the warmup should be measured in a way that guarantees the
+low-$\sigma$, most head/tail-informative examples have been seen a sufficient number of times
+by epoch 30, not just that 30 epochs of wall-clock training have elapsed --- verify this
+empirically rather than assume it transfers unchanged from the clean-data-only regime v22 was
+tuned in.
+
+%==============================================================================
+\section{Calibration-specific design}
+\label{sec:calibration}
+%==============================================================================
+
+The \code{a100\_final} finding motivating this section: ECE was \emph{worst} exactly where
+the model was most accurate/confident (high energy, low blur, ECE $\sim$40\%, vs.\
+$\sim$28--30\% at high blur). A proper scoring rule (vMF NLL) is a necessary but evidently
+\emph{not sufficient} condition for calibration: with a flexible enough head and finite data,
+gradient descent on NLL has every incentive to push $\kappa$ arbitrarily high wherever
+point estimates are frequently close to correct, because NLL improves as $\kappa\to\infty$
+for a correctly-placed mode --- this overfits to per-track noise in exactly the easy regime,
+producing systematic overconfidence that does not generalize to held-out data.
+
+\textbf{Definitive recommendation, two complementary mechanisms:}
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{An explicit concentration regularizer added directly to the training loss},
+      analogous to the ``confidence penalty'' used to calibrate over-confident softmax
+      classifiers (Pereyra et al.\ 2017): add a small penalty term proportional to the
+      \emph{negative differential entropy} of the vMF mixture (a smooth, monotonic function
+      of $\kappa$ for each component), \[ \mathcal{L}_{\rm calib} = \lambda \sum_k w_k\,
+      \kappa_k, \] a simple, cheap, directly-tunable proxy for the same effect (entropy of a
+      3-D vMF is monotonically decreasing in $\kappa$, so penalizing $\kappa$ directly is a
+      valid, simpler stand-in for a full entropy term and avoids needing the vMF entropy's
+      closed form). This applies uniformly across the training set — including easy,
+      low-$\sigma$ examples — directly counteracting the runaway-confidence-when-accurate
+      mechanism, without touching held-out data at all. $\lambda$ is a new hyperparameter;
+      start small (e.g.\ tuned so $\mathcal{L}_{\rm calib}$ is $\sim$1\% of the direction NLL
+      at initialization) and treat its selection as part of the Stage~2 build-and-validate
+      gate (\S\ref{sec:eval}), not a guess frozen in advance.
+\item \textbf{Calibration-aware checkpoint selection, not calibration-aware training.} Stage
+      2 currently selects its best checkpoint by validation NLL (\code{best\_val\_loss\_s2}).
+      Change the selection criterion to include validation-split coverage/ECE alongside NLL
+      (e.g.\ select the checkpoint minimizing validation ECE among those within some small
+      tolerance of the best validation NLL). \textbf{This is not a recalibration map} --- no
+      additional trainable parameters are fit on validation or eval data, and no
+      transformation is applied to the model's outputs after the fact. It only changes
+      \emph{which already-trained epoch's weights are kept}, using a metric measured on data
+      the model did not train on, which is a legitimate, standard form of model selection
+      and is explicitly distinct from the post-hoc temperature scaling this document rules
+      out.
+\end{enumerate}
+
+Report both the pre- and post-$\lambda$ (item 1 present vs.\ absent) coverage curves in the
+build-and-validate gate so the regularizer's actual effect is measured, not assumed.
+
+\textbf{Before trusting this mechanism's premise, verify it against real data (external
+review flag, cheap, do first):} the runaway-$\kappa$-when-accurate explanation above is
+argued from first principles, not yet checked against \code{a100\_final}'s actual $\kappa$
+outputs. Pull the \code{a100\_final} ``small'' checkpoint and inspect mean $\kappa$ by
+energy/$\sigma$ cell before finalizing $\lambda$'s design --- this five-minute check would
+confirm or correct whether raw $\kappa$ growth is really the driver, versus e.g.\
+mixture-weight collapse onto a single overconfident component, which would call for a
+different regularizer term entirely.
+
+\textbf{Named escalation path if $\lambda$ is insufficient:} the grid/Implicit-PDF-style
+non-parametric posterior (built earlier this session, never deployed, kept only as an
+untested fallback) is the correct next step specifically for calibration --- it directly
+addresses a too-rigid posterior \emph{family}, which a $\kappa$ penalty on a fixed vMF
+mixture cannot fix if the real problem is representational, not just a magnitude issue.
+
+\textbf{Complementary, near-free addition, unconditional on whether $\lambda$ works:} train
+2--3 seeds and ensemble (average) their posteriors. This is a well-established, essentially
+free calibration improvement that does not require any architecture change and stacks with
+either the $\kappa$-regularizer or the grid-posterior escalation --- include it in the build
+regardless of how items 1--2 above perform.
+
+%==============================================================================
+\section{Evaluation methodology}
+\label{sec:eval}
+%==============================================================================
+
+Use the identical convention already validated in \code{a100\_final/eval.py} and the
+reference \code{full\_sweep\_9tier\_6nm\_EMA.csv}: the full \textbf{9-$\sigma$
+$\times$ 3-energy-tier grid} ($\sigma\in\{0,1,3,6,10,20,30,50,100\}$nm $\times$
+\{low, mid, high\}), each cell scored against the classical PCA/geometric baseline computed
+with the same convention, 1000 held-out tracks/cell minimum. Calibration measured via the
+same angular-coverage methodology, \textbf{reported per-$\sigma$-tier, not just pooled} ---
+the whole reason the overconfidence-when-accurate pattern was caught in \code{a100\_final}
+is that it was checked at multiple sigma levels rather than trusting one pooled number.
+
+\textbf{Pre-registered success cells:} median axis error at mid-energy
+$\sigma\in\{6,10,20\}$ and high-energy $\sigma\in\{6,10,20,30,50\}$ must improve over the
+current best reference with a confidence interval excluding zero. \textbf{Status of that
+reference, stated honestly:} \code{from\_scratch\_dr}'s real per-cell curve has now been
+measured (full 9-$\sigma\times$3-tier sweep against its actual checkpoint, cited in
+\S\ref{sec:fallback}) and is real, usable data. \textbf{v22's own zero-shot-under-blur curve
+has not} --- only a single data point survives (77.8$^\circ$/57\% at 1nm, from
+\code{dr\_sigma}'s docstring). \textbf{Run v22's actual \code{ROT\_FINAL} checkpoint through
+the same full 9-$\sigma\times$3-tier sweep before training v23} (a cheap eval-only pass, no
+training) so both real baselines --- v22 zero-shot and \code{from\_scratch\_dr} --- exist
+before the success gate is evaluated against them, rather than comparing v23 against a
+mixture of one measured curve and one single point.
+
+\textbf{Pre-registered guard cells (hard stop if violated):} axis error and head-tail
+accuracy at $\sigma\in\{0,1\}$ across all three tiers must not regress below v22's own
+zero-blur numbers (6.8$^\circ$/97.0\% pooled) by more than a small, explicitly-agreed margin;
+low-energy axis error at any $\sigma$ must not regress relative to the already-established
+information-floor-saturated baseline (regression here is meaningless improvement-wise but a
+regression would indicate something else broke).
+
+\textbf{Calibration success:} mean ECE across the 27-cell grid materially below both v22's
+zero-shot-under-blur collapse and \code{a100\_final}'s $\sim$30--40\%, \emph{and} no cell
+should reproduce the ``ECE worst where most accurate'' inversion pattern found in
+\code{a100\_final} --- check this explicitly as a named diagnostic, not just the aggregate
+number.
+
+%==============================================================================
+\section{Staged build plan}
+%==============================================================================
+
+\begin{enumerate}[leftmargin=*]
+\item \textbf{Component swap-in, zero-init verified (no training):} drop the V-bottleneck,
+      confirm \code{DirectionalPosterior} runs unmodified; add the $\sigma$-conditioning
+      inputs and the 4 new higher-moment scalar features with zero-init weights; swap in the
+      \code{a100\_final} normalizer and blur-adaptive graph; add the $\kappa$-regularizer
+      term (inactive, $\lambda=0$, to confirm it does not change forward-pass behavior before
+      being turned on). Verify bit-identical outputs to plain v22 wherever the new inputs are
+      zeroed, the same zero-init discipline used throughout \code{a100\_final}.
+\item \textbf{Stage 1 modification, smoke-tested:} add dynamic blur sampling to Stage 1's
+      data pipeline; confirm a short run trains without NaNs/crashes and that $\sigma{=}0$
+      performance is not catastrophically different from v22's own smoke test.
+\item \textbf{Full Stage 1 + Stage 2 training run} on the v2 corpus (1{,}009{,}384 tracks),
+      with $\lambda>0$ active, on whatever GPU budget is available next (this is a smaller
+      model than the \code{a100\_final} ``large'' config --- hidden=96/6 layers --- so it
+      should be materially cheaper than the 30-hour A100 budget already spent; scope the
+      actual budget once Stage 1's real throughput is measured, not guessed).
+\item \textbf{Full evaluation} against the pre-registered grid, gates, and calibration
+      diagnostics above.
+\item \textbf{Only if the sigma-conditioned, blur-exposed two-stage model still fails the
+      success gates:} escalate to testing unfreezing (re-run \code{dr\_sigma}'s hypothesis,
+      now with sigma-conditioning present) as a distinct, separately-gated follow-up, not a
+      simultaneous change.
+\end{enumerate}
+
+%==============================================================================
+\section{Explicitly out of scope}
+%==============================================================================
+Restated for a reader who starts here: \textbf{v23 is not attempting to beat PCA at low
+energy under real blur.} That regime's ceiling was established this session by three
+independent methods and is treated as a physical fact, not an engineering target. v23's
+scope is (a) recovering v22's proven zero-blur strength without regression, and (b)
+achieving genuine blur-robustness at mid/high energy where the physics allows it, with
+calibration that holds without any post-hoc correction.
+
+\end{document}
