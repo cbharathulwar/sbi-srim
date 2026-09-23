@@ -94,6 +94,13 @@ BEST_S2_NLL = os.path.join(C.RESULTS_DIR, "best_checkpoint_stage2_nll.pt")
 BEST_S2_SEL = os.path.join(C.RESULTS_DIR, "best_checkpoint_stage2.pt")
 TRAIN_LOG = os.path.join(C.RESULTS_DIR, "training_log.csv")
 METRICS_JSON = os.path.join(C.RESULTS_DIR, "metrics.json")
+# [added post-build, ported from v22's --resume, which this build initially
+# omitted] periodic "latest" checkpoints, separate from the best/selected
+# ones above, saved every CHECKPOINT_EVERY_SEC regardless of whether that
+# epoch improved anything -- the actual resume point.
+LATEST_S1 = os.path.join(C.RESULTS_DIR, "checkpoint_latest_stage1.pt")
+LATEST_S2 = os.path.join(C.RESULTS_DIR, "checkpoint_latest_stage2.pt")
+RESUME = os.environ.get("RESUME", "1") == "1"
 
 
 # ----------------------------------------------------------- Oh augmentation
@@ -450,7 +457,7 @@ def run_stage(stage, model, dir_head, energy_head, pool, theta, train_idx,
               val_batches, ece_batches, n_max, phys_mean, phys_std,
               max_epochs, lr_max, lr_min, warmup, patience, grad_clip,
               aux_always_axis_aware, best_path_nll, best_path_sel, log_rows,
-              t_global):
+              t_global, latest_path=None, resume=True):
     """One training stage.  Both stages draw from the SAME dynamic-blur pipeline
     (S{training}); they differ in the index pool (Stage 2 = Pool A only), what is
     trainable (Stage 2 = frozen backbone, fresh head), and the aux curriculum.
@@ -469,17 +476,6 @@ def run_stage(stage, model, dir_head, energy_head, pool, theta, train_idx,
     print(f"[STAGE {stage}] trainable params: {sum(p.numel() for p in params):,}")
     optimizer = torch.optim.AdamW(params, lr=lr_max,
                                   weight_decay=C.WEIGHT_DECAY)
-    ema = EMA(model, C.EMA_DECAY) if C.USE_EMA else None
-
-    ds = TrackDataset(pool=pool, theta=theta, idx_arr=np.asarray(train_idx),
-                     steps_per_epoch=steps_per_epoch, batch_size=C.BATCH_SIZE,
-                     n_max=n_max, start_step=0, total_steps=total_steps,
-                     seed=C.SEED + stage, h0=C.H0, k_min=C.K_MIN, k_max=C.K_MAX,
-                     p_zero=C.P_ZERO, min_sigma_A=C.MIN_SIGMA_A,
-                     max_sigma_A=C.MAX_SIGMA_A)
-    loader = make_loader(ds, C.BATCH_SIZE, C.N_WORKERS, C.PREFETCH, n_max,
-                         C.K_MAX, pin_memory=(DEVICE == 'cuda'))
-    it = iter(loader)
 
     selector = CalibrationAwareSelector(C.ECE_NLL_TOL, C.SELECT_ON_ECE)
     epochs_no_improve = 0
@@ -487,8 +483,60 @@ def run_stage(stage, model, dir_head, energy_head, pool, theta, train_idx,
     n_seen = n_seen_zero = n_seen_low = 0
     budget = C.TIME_BUDGET_HOURS * 3600 if C.TIME_BUDGET_HOURS > 0 else None
     stop_reason = "max_epochs"
+    start_epoch = 0
 
-    for epoch in range(max_epochs):
+    # ---- resume from the periodic "latest" checkpoint, if one exists ----
+    # [added post-build] model_state_dict in every checkpoint this project saves
+    # is the EMA-swapped-in snapshot (see save_ckpt's docstring), not raw
+    # training weights -- so resuming loads that snapshot as the new starting
+    # point for BOTH the live model and a freshly-seeded EMA shadow. This is a
+    # deliberate simplification (continue from the smoothed point, not a
+    # bit-exact mid-epoch resume) rather than changing the checkpoint format,
+    # which would also require updating eval.py's loader.
+    if resume and latest_path and os.path.exists(latest_path):
+        ck = torch.load(latest_path, map_location=DEVICE, weights_only=False)
+        if ck.get('stage_done'):
+            print(f"[STAGE {stage}] [RESUME] {latest_path} is already marked "
+                  f"complete (stop_reason={ck.get('stop_reason')}) -- skipping "
+                  f"straight to the stage result, no training this run.")
+            return dict(best_nll=ck['best_nll'], best_ece=ck['best_ece'],
+                       selected_epoch=ck.get('selected_epoch'),
+                       stop_reason=ck.get('stop_reason', 'resumed_done'),
+                       n_seen=ck.get('n_seen', 0),
+                       n_seen_sigma0=ck.get('n_seen_sigma0', 0),
+                       n_seen_sigma_lt_3nm=ck.get('n_seen_sigma_lt_3nm', 0))
+        model.load_state_dict(ck['model_state_dict'])
+        dir_head.load_state_dict(ck['dir_head_state_dict'])
+        energy_head.load_state_dict(ck['energy_head_state_dict'])
+        if ck.get('optimizer_state_dict'):
+            optimizer.load_state_dict(ck['optimizer_state_dict'])
+        start_epoch = ck['epoch'] + 1
+        selector.best_nll = ck.get('selector_best_nll', selector.best_nll)
+        selector.best_ece = ck.get('selector_best_ece', selector.best_ece)
+        selector.selected_epoch = ck.get('selector_selected_epoch')
+        epochs_no_improve = ck.get('epochs_no_improve', 0)
+        n_seen = ck.get('n_seen', 0)
+        n_seen_zero = ck.get('n_seen_sigma0', 0)
+        n_seen_low = ck.get('n_seen_sigma_lt_3nm', 0)
+        print(f"[STAGE {stage}] [RESUME] {latest_path}: continuing from epoch "
+              f"{start_epoch}/{max_epochs} (best val NLL so far "
+              f"{selector.best_nll:.4f})")
+
+    ema = EMA(model, C.EMA_DECAY) if C.USE_EMA else None
+
+    ds = TrackDataset(pool=pool, theta=theta, idx_arr=np.asarray(train_idx),
+                     steps_per_epoch=steps_per_epoch, batch_size=C.BATCH_SIZE,
+                     n_max=n_max, start_step=start_epoch * steps_per_epoch,
+                     total_steps=total_steps,
+                     seed=C.SEED + stage, h0=C.H0, k_min=C.K_MIN, k_max=C.K_MAX,
+                     p_zero=C.P_ZERO, min_sigma_A=C.MIN_SIGMA_A,
+                     max_sigma_A=C.MAX_SIGMA_A)
+    loader = make_loader(ds, C.BATCH_SIZE, C.N_WORKERS, C.PREFETCH, n_max,
+                         C.K_MAX, pin_memory=(DEVICE == 'cuda'))
+    it = iter(loader)
+    last_ckpt_t = time.time()
+
+    for epoch in range(start_epoch, max_epochs):
         t_ep = time.time()
         lr = cosine_lr_with_warmup(epoch, warmup, max_epochs, lr_max, lr_min)
         for g in optimizer.param_groups:
@@ -613,6 +661,22 @@ def run_stage(stage, model, dir_head, energy_head, pool, theta, train_idx,
             w.writeheader()
             w.writerows(log_rows)
 
+        # ---- periodic "latest" checkpoint, THE actual resume point -- saved
+        # every CHECKPOINT_EVERY_SEC regardless of whether this epoch improved
+        # anything, so a disconnect loses at most one interval's progress.
+        if latest_path and (time.time() - last_ckpt_t >= C.CHECKPOINT_EVERY_SEC):
+            save_ckpt(latest_path, model, ema, dir_head, energy_head,
+                     optimizer, epoch, va, phys_mean, phys_std, n_max, stage,
+                     extra=dict(stage_done=False,
+                                selector_best_nll=selector.best_nll,
+                                selector_best_ece=selector.best_ece,
+                                selector_selected_epoch=selector.selected_epoch,
+                                epochs_no_improve=epochs_no_improve,
+                                n_seen=n_seen, n_seen_sigma0=n_seen_zero,
+                                n_seen_sigma_lt_3nm=n_seen_low))
+            last_ckpt_t = time.time()
+            print(f"    -> [RESUME POINT] saved {os.path.basename(latest_path)}")
+
         # ---- S{loss} empirical verification, reported at the curriculum switch
         if stage == 1 and epoch == C.AUX_SIGN_WARMUP - 1:
             # v22's equivalent exposure: every clean epoch was 100% sigma=0, so
@@ -656,10 +720,21 @@ def run_stage(stage, model, dir_head, energy_head, pool, theta, train_idx,
           + (f", selected epoch {selector.selected_epoch} "
              f"(ECE {100*selector.best_ece:.2f}%)"
              if selector.selected_epoch is not None else ""))
-    return dict(best_nll=selector.best_nll, best_ece=selector.best_ece,
-                selected_epoch=selector.selected_epoch,
-                stop_reason=stop_reason, n_seen=n_seen,
-                n_seen_sigma0=n_seen_zero, n_seen_sigma_lt_3nm=n_seen_low)
+    result = dict(best_nll=selector.best_nll, best_ece=selector.best_ece,
+                 selected_epoch=selector.selected_epoch,
+                 stop_reason=stop_reason, n_seen=n_seen,
+                 n_seen_sigma0=n_seen_zero, n_seen_sigma_lt_3nm=n_seen_low)
+    # mark this stage complete on the resume point too, so a later resume
+    # attempt (e.g. Stage 2 disconnects, Stage 1 is untouched) skips Stage 1
+    # entirely instead of re-training it (see the stage_done check above).
+    if latest_path:
+        save_ckpt(latest_path, model, ema, dir_head, energy_head,
+                 optimizer, epoch, dict(nll=selector.best_nll, ece=selector.best_ece,
+                                        direction=float('nan'), energy=float('nan'),
+                                        kappa=float('nan')),
+                 phys_mean, phys_std, n_max, stage,
+                 extra=dict(stage_done=True, **result))
+    return result
 
 
 # ===================================================================== main
@@ -717,7 +792,8 @@ def main():
                    C.MAX_EPOCHS, C.LR_MAX, C.LR_MIN, C.WARMUP_EPOCHS,
                    C.PATIENCE, C.GRAD_CLIP, aux_always_axis_aware=False,
                    best_path_nll=BEST_S1, best_path_sel=None,
-                   log_rows=log_rows, t_global=t0)
+                   log_rows=log_rows, t_global=t0,
+                   latest_path=LATEST_S1, resume=RESUME)
 
     # --------------------------------------------------------- Stage 2
     print(f"\n{'='*70}\n  STAGE 2: frozen backbone, FRESH posterior, Pool A only"
@@ -747,7 +823,8 @@ def main():
                    C.STAGE2_WARMUP, C.STAGE2_PATIENCE, C.STAGE2_GRAD_CLIP,
                    aux_always_axis_aware=True,
                    best_path_nll=BEST_S2_NLL, best_path_sel=BEST_S2_SEL,
-                   log_rows=log_rows, t_global=t0)
+                   log_rows=log_rows, t_global=t0,
+                   latest_path=LATEST_S2, resume=RESUME)
 
     if not os.path.exists(BEST_S2_SEL):
         print("[WARN] no calibration-selected Stage-2 checkpoint was written; "
